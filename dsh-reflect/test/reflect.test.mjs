@@ -94,5 +94,16 @@ const bad = { sections: null };
 await listeners[0].fn(bad, {}, async () => ({ survived: true }));
 check("E12 listener never throws on odd assembly", true);
 
+// ---- render arity (regression) ----
+// The harness calls output.render(args, value): parameter ONE is the call's
+// arguments, the validated return value is parameter TWO. Binding the value as
+// the first parameter makes every tool silently show the model its own input —
+// writes still land, so no other assertion catches it.
+const recallOut = await recall.output.render({ scope: "global" }, { file: globalFile, count: 7 });
+check("E13 render shows value, not arguments", recallOut.length === 1
+  && recallOut[0].text.includes('"count":7') && !recallOut[0].text.includes("scope"));
+const recordOut = await rec.output.render({ text: "lesson", scope: "workspace" }, { file: "F", stored: true, count: 2 });
+check("E14 record render carries stored/count", recordOut[0].text.includes('"stored":true') && !recordOut[0].text.includes("lesson"));
+
 console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
 process.exit(failures ? 1 : 0);

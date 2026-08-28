@@ -32,15 +32,23 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 npm test
 ```
 
-29 项断言：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→assemble 注入幂等/异常免疫）。
+31 项断言：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→assemble 注入幂等/异常免疫）+ **render 元数回归**（E13/E14）。
+
+> 坑（实机才暴露）：harness 的 `output.render(args, value)` **第一参是入参、返回值在第二位**。早期写成 `render = (value) => JSON.stringify(value)`，工具于是把**模型自己的入参**当成结果回显——写盘照常成功、测试全绿，只有真会话能看出来。签名对照见官方 `dsh-tool-fs` 的 `render: (_args, value) => …`。
+
 `node_modules/@deepseek-ai/{dsh-tools,dsh-llm}` 是指向已安装 dsh 的 **junction**（开发形态，发布物走 peerDependencies）。
 
 ## 安装（本机 DSH）
 
 ```
-dsh plugin add @garvel/dsh-reflect   # 或 file:D:/dsh_evo/dsh-reflect 开发挂载
-dsh web restart
+dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect   # 或 npm 发布后 @garvel/dsh-reflect
+# 然后杀掉 web 进程、重新 `dsh web`（CLI 没有 restart 子命令；配置与插件不热重载）
 ```
+
+两个前提：
+
+- `package.json` 必须声明 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`——缺它 `dsh plugin add` 只当**普通依赖**装进 profile，不进 bundle 层栈（CLI 会 warning 一句，很容易被忽略）；
+- `file:` 依赖在 pnpm 下是**实体拷贝**，改源码后 `plugin add` 报 "Already up to date" 不重拷：要么手动同步 `~/.dsh/profiles/web/node_modules/@garvel/dsh-reflect/`，要么先 `plugin remove` 再 add。装载结果可用 `dsh --profile web --dump-config` 静态核对（看合成树里有没有 `tool-reflect` 层，不必重启）。
 
 ## 路线图（在新会话 dsh_evo 里讨论）
 

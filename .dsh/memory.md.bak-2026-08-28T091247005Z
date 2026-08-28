@@ -1,0 +1,4 @@
+# dsh-reflect memory
+<!-- managed by @garvel/dsh-reflect; one lesson per '- ' line, trailing #tags optional; never store secrets -->
+- dsh_evo 工作区记忆文件首条：本工作区承载 dsh-reflect spike，进展看 HANDOFF-NOTES.md #workspace
+- 【DEMO 待删除】reflect_record 写入通路验证条目，仅用于演示，随后由 reflect_consolidate 剔除 #demo

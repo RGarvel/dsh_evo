@@ -45,7 +45,11 @@ function targetFile(scope, workspaceDir) {
   return join(workspaceDir, WORKSPACE_REL);
 }
 
-const render = (value) => [{ type: "text", text: JSON.stringify(value) }];
+// Harness contract (`render(args, value)` — see dsh-tool-fs): parameter ONE is
+// the call's arguments, the validated return value is parameter TWO. Binding the
+// value as the first parameter makes the tool echo its own input to the model
+// while the side effect still happens — silent, so it needs an explicit test.
+const render = (_args, value) => [{ type: "text", text: JSON.stringify(value) }];
 
 function apply(ctx) {
   ctx.tools.register(defineTool({

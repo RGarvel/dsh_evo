@@ -19,16 +19,18 @@
 - `system-prompt/assemble` 是全局瀑布事件，插件可 push `{name, order, text:string}` section —— spike 的注入面就是它，测试 E9-E12 断言过幂等与异常免疫；
 - `AssembleContext` 只有 `{scope, signal}`，**没有 cwd** → 工作区级注入做不到（v0 只注入全局层 + 指路 recall）。这是 harness seam 缺口，与 #4879 同族；
 - `dsh-tools.defineTool` 的 output schema DSL **拒绝** `type:["object","null"]` 数组、拒绝 oneOf 分支里的 `additionalProperties`——可空返回一律改成对象+`skipped` 标记（两连拒已踩，见 README 测试节）；
-- 事件监听需 `{global:true}` 才吃到所有 scope 的组装（否则仅本插件 scope，实测按 bundle 插入形态在 host scope 生效）。
+- 事件监听需 `{global:true}` 才吃到所有 scope 的组装（否则仅本插件 scope，实测按 bundle 插入形态在 host scope 生效）；
+- **`output.render` 的签名是 `(args, value)`——返回值在第二个参数**（对照官方 `dsh-tool-fs`）。写成 `render(value)` 时 harness 会把模型的**入参**当结果喂回：工具副作用照常、测试全绿、只有真会话看得出（本次就是靠"recall 返回 `{"scope":"global"}`"识破的）。已在 spike 加 E13/E14 元数回归；
+- 动态 Cordis 插件本次**不可用**：`cordis_define` 的 `plugin` 参数连 `{kind:"new",idPrefix:"probe"}` 这种最简形态都报 `must match exactly one oneOf branch (matched 0)`，三种写法全拒——本会话没法用探针插件，定位得走源码直读。
 
 ## 待办（新会话的讨论清单）
 
-1. **实机装载**（2026-08-28 本会话已完成装载侧，剩重启+验证）：
-   - ✅ `dsh-reflect/package.json` 补了 `dsh.bundle.patch: ./cordis.patch.yml` 声明——**没有它 `dsh plugin add` 只当普通依赖装，不进 bundle 层栈**（CLI 有 warning，源码 `dsh/lib/plugin-*.js` reconcile 逻辑）；
-   - ✅ `dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect` 已跑，profile package.json bundles 末尾已出现 `@garvel/dsh-reflect`；
-   - ⚠ profile 侧是**实体拷贝**（pnpm file: 行为）：改 dsh_evo 源码后 `plugin add` 报 "Already up to date" 不重拷，需手动同步 `~/.dsh/profiles/web/node_modules/@garvel/dsh-reflect/` 下的副本（本次只同步过 package.json）；
-   - ✅ 全局记忆已播种 2 条（`~/.dsh/reflect/memory.md`，含本次装载经验本身）；模块从 profile 路径烟雾 import 通过；
-   - ❇ **剩余**：终端 `dsh`（即重启 web 进程，无 restart 子命令，杀进程重开）→ 新会话问"你能看到 Persistent Memory 吗"或直接调 `reflect_record`/`reflect_recall` 验证注入面+工具面；
+1. **实机装载** ✅（2026-08-28 完成）：
+   - `dsh-reflect/package.json` 补了 `dsh.bundle.patch: ./cordis.patch.yml` 声明——**没有它 `dsh plugin add` 只当普通依赖装，不进 bundle 层栈**（CLI 有 warning，源码 `dsh/lib/plugin-*.js` reconcile 逻辑）；
+   - `dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect` 已跑，profile bundles 末尾已挂 `@garvel/dsh-reflect`；`dsh --profile web --dump-config` 可静态核对合成树里的 `tool-reflect` 层（免重启）；
+   - ⚠ profile 侧是**实体拷贝**（pnpm file: 行为）：改源码后 `plugin add` 报 "Already up to date" 不重拷，需手动同步 `~/.dsh/profiles/web/node_modules/@garvel/dsh-reflect/` 下的副本；
+   - **重启后实测**：新会话系统提示确实出现 `## Persistent Memory (dsh-reflect)` 段并列出全局条目，三工具都在模型工具表里 → **注入面 + 注册面 + 写盘面全通**（全局 4 条 / 工作区 1 条已核对）；
+   - ❇ **唯一遗留**：过程中查出并修好了 `render` 元数 bug（见上），修复已同步进 profile 副本，但**代码只在进程启动时求值 → 需再重启一次**才能看到正常返回值（现在模型收到的仍是入参回显）。下次重启后验一句：`reflect_recall(scope:"global")` 应返回 `{global:{count:N,...},workspace:{...}}` 而不是 `{"scope":"global"}`。
 2. 自动蒸馏回路设计：`dsh-schedule` 定时 vs 会话结束事件；用 `dsh-session-query-sqlite` 挖近期会话让子代理提炼候选教训（要人工复核开关 + 敏感词 redaction）；
 3. 注入预算 token 化、语义判重、与 skills 打通（高频教训→SKILL.md 草稿）；
 4. 上游联动：把"memory-injection 需要的 scope→workspace 映射"作为追加论据评论进 #4879（如果它还没凉）；

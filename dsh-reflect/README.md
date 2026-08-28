@@ -63,7 +63,7 @@ dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect   # 或 npm 发布后 @
 
 1. **自动蒸馏**（下一步，也是唯一还没有生产者的环节）：`session/event` 折 `turn/end{completed}` + `ctx.timer` 静默去抖（**不是** `dsh-schedule`——它是会话内提醒器，不启动 agent turn）→ `sessionQuery` 选候选会话 → `llm.stream` 单发提炼 → 候选进 `pending.md`。开工前还欠两个探针：`{global:true}` 的监听能否收到**所有**会话的 `turn/end`；`searchEvents` 本机是否真有全文（`~/.dsh` 下搜不到 sqlite 文件）；
 2. **复核门**：队列 + `/reflect-review` + 凭据筛查已就位（第 4 个工具那节）。剩两件锦上添花：`userQuestions.ask()` 把批准变成一次点击式提问，`settings` 注册 `reflect` 命名空间做总开关；
-3. ✅ **注入面迁移**（已完成）：`assemble` 监听 → `systemPrompt.section()` provider，工作区层注入随之打通；预算改 token 口径（harness 同除数）；
+3. ✅ **注入面迁移**（已完成）：`assemble` 监听 → `systemPrompt.section()` provider，工作区层注入随之打通；预算改 token 口径（harness 同除数）；**工作区组排在组前**，预算紧时先丢旧的全局教训而非当前项目教训；
 4. compaction 搭车（`compaction/summary` 事件是白捡的输入）、语义判重（`new/merge/drop` 三态交给提炼步骤）、高频教训→SKILL.md 草稿（`skills.register`）。
 
 ## 渊源

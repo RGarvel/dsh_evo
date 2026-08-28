@@ -112,9 +112,13 @@ const INJECTION_RULES =
  */
 export function renderInjection(globalEntries, workspaceEntries, { maxChars = 0, maxTokens = 600, pendingCount = 0 } = {}) {
   const budget = maxChars > 0 ? maxChars : Math.max(1, maxTokens) * CHARS_PER_TOKEN;
+  // Workspace lessons come FIRST in the ordered list so they survive tail-trim
+  // when budget is tight — they are more immediately relevant to the current
+  // session's work. Global lessons append after and are the ones dropped first
+  // when the cap is hit.
   const lessons = [
-    ...globalEntries.map((e) => ({ group: "Global lessons", e })),
     ...workspaceEntries.map((e) => ({ group: "Workspace lessons", e })),
+    ...globalEntries.map((e) => ({ group: "Global lessons", e })),
   ];
   const body = (keep) => {
     const out = [];

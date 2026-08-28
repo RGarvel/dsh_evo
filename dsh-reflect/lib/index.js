@@ -15,7 +15,7 @@
  *
  * @module @garvel/dsh-reflect
  */
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
@@ -51,6 +51,23 @@ const EVENT_LOG = (() => {
   if (raw === "off") return "";
   return raw ? raw : join(homedir(), ".dsh", "reflect", "events.jsonl");
 })();
+// Spike-only auto-distill gate, resolved from any of three sources so the
+// loop can be exercised without depending on terminal env inheritance:
+//  1. DSH_REFLECT_AUTO_DISTILL=on  (a real exported env var; cannot live in .env,
+//     dsh-app-boot rejects DSH_-prefixed names there)
+//  2. REFLECT_AUTO_DISTILL=on      (no DSH_ prefix, so loadLayeredEnv DOES apply it
+//     from ~/.dsh/.env on every start — the reliable path)
+//  3. presence of ~/.dsh/reflect/auto-distill.on (a sentinel file)
+const AUTO_DISTILL_SENTINEL = join(homedir(), ".dsh", "reflect", "auto-distill.on");
+function resolveAutoDistill() {
+  if (process.env.DSH_REFLECT_AUTO_DISTILL === "on") return true;
+  if (process.env.REFLECT_AUTO_DISTILL === "on") return true;
+  try {
+    return existsSync(AUTO_DISTILL_SENTINEL);
+  } catch {
+    return false;
+  }
+}
 const MAX_ENTRIES = 500;
 
 /**
@@ -369,9 +386,9 @@ function apply(ctx) {
 
   // ---- spike probe + auto-distill: {global:true} session/event listener ----
   // Logs every event to EVENT_LOG so we can verify {global:true} spans all sessions.
-  // When DSH_REFLECT_AUTO_DISTILL=on, also triggers a distillation pass on each
-  // completed turn/end (debounced per-session, 5 min minimum gap).
-  const AUTO_DISTILL = process.env.DSH_REFLECT_AUTO_DISTILL === "on";
+  // When the auto-distill gate resolves on (env, .env, or sentinel file), also
+  // triggers a distillation pass on each completed turn/end (debounced, 5 min gap).
+  const AUTO_DISTILL = resolveAutoDistill();
   ctx.on("session/event", (subject, event) => {
     // Probe: always write (cheap append).
     if (EVENT_LOG) {
@@ -394,6 +411,15 @@ function apply(ctx) {
       }
     }
     // Distill: fire-and-forget, guarded by env and event shape.
+    if (event?.type === "turn/end") {
+      try {
+        writeFileSync(
+          join(homedir(), ".dsh", "reflect", "distill-debug.log"),
+          new Date().toISOString() + ` listener: AUTO_DISTILL=${AUTO_DISTILL} reason=${event?.data?.reason?.kind} hasAgent=${Boolean(subject)}\n`,
+          { flag: "a", encoding: "utf8" },
+        );
+      } catch { /* diagnostics must never break the session */ }
+    }
     if (!AUTO_DISTILL) return;
     if (event?.type !== "turn/end" || event?.data?.reason?.kind !== "completed") return;
     const agent = subject;

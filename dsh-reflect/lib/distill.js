@@ -13,7 +13,16 @@
  *    opt-in; no prod behaviour change without explicit consent).
  */
 import { writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+
+// A completed turn/end, tolerant of both the flat ({kind}) and the SessionEvent
+// ({data:{reason:{kind}}}) shapes so we are not guessing which one listEvents gives.
+function isCompletedTurnEnd(e) {
+  if (!e || e.type !== "turn/end") return false;
+  return e.kind === "completed" || e.data?.reason?.kind === "completed";
+}
 
 const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes per session
 const DISTILL_TIMEOUT_MS = 60_000;
@@ -48,6 +57,17 @@ If you return only "new" items, the existing lessons are preserved unchanged.`;
 // Per-session last-distill timestamp (in-memory, reset on restart).
 const lastDistill = new Map();
 
+// Spike diagnostic: log every gate the distill loop passes or bails on, so one
+// restart tells us exactly why pending.md stayed empty. Strips before release.
+const DEBUG_FILE = join(homedir(), ".dsh", "reflect", "distill-debug.log");
+function dbg(msg) {
+  try {
+    writeFileSync(DEBUG_FILE, new Date().toISOString() + " " + msg + "\n", { flag: "a", encoding: "utf8" });
+  } catch {
+    /* diagnostics must never break distill */
+  }
+}
+
 /**
  * Decide whether one session qualifies for a distillation pass.
  * Returns { qualified: true, cwd, sessionId } or null.
@@ -73,10 +93,7 @@ async function completedTurnCount(sessionQuery, sessionId, sinceSeq) {
   const events = await sessionQuery.listEvents(sessionId);
   if (!events.length) return 0;
   return events.filter(
-    (e) =>
-      e.type === "turn/end" &&
-      e.kind === "completed" &&
-      (!sinceSeq || e.seq > sinceSeq),
+    (e) => isCompletedTurnEnd(e) && (!sinceSeq || e.seq > sinceSeq),
   ).length;
 }
 
@@ -100,30 +117,32 @@ async function fetchTurnContent(sessionQuery, sessionId, sinceSeq, maxEvents = 2
 export async function tryDistill(ctx, event, agent) {
   try {
     const sessionQuery = ctx.get("sessionQuery");
-    if (!sessionQuery) return;
+    if (!sessionQuery) { dbg("bail: no sessionQuery service"); return; }
 
     const candidate = selectCandidate(event, agent, null);
-    if (!candidate) return;
+    if (!candidate) { dbg(`bail: not selected (seq=${event?.seq} type=${event?.type} reason=${event?.data?.reason?.kind} cwd=${agent?.session?.header?.cwd} inDebounce=${(Date.now() - (lastDistill.get(agent?.session?.id) ?? 0)) < DEBOUNCE_MS})`); return; }
 
     const { sessionId, cwd } = candidate;
     const isWorkspace = cwd !== undefined;
     const memoryFile = isWorkspace ? join(cwd, ".dsh", "memory.md") : null;
     const pendingFile = isWorkspace
       ? join(cwd, ".dsh", "memory-pending.md")
-      : join(process.env.HOME || "", ".dsh", "reflect", "pending.md");
+      : join(homedir(), ".dsh", "reflect", "pending.md");
+    dbg(`selected session=${sessionId} cwd=${cwd} pendingFile=${pendingFile}`);
 
     // Check completed-turn count — skip short sessions.
     // We need the seq of the last completed turn before this one.
     const allEvents = await sessionQuery.listEvents(sessionId);
     const completedSince = allEvents
-      .filter((e) => e.type === "turn/end" && e.kind === "completed")
+      .filter((e) => isCompletedTurnEnd(e))
       .filter((e) => e.seq < event.seq);
-    if (completedSince.length < MIN_COMPLETED_TURNS) return;
+    if (completedSince.length < MIN_COMPLETED_TURNS) { dbg(`bail: completed turns before this = ${completedSince.length} < ${MIN_COMPLETED_TURNS}`); return; }
     const sinceSeq = completedSince[completedSince.length - 1].seq;
 
     // Fetch message content.
     const content = await fetchTurnContent(sessionQuery, sessionId, sinceSeq, 100);
-    if (!content.trim()) return;
+    if (!content.trim()) { dbg("bail: empty content window"); return; }
+    dbg(`content chars=${content.length}`);
 
     // Read existing lessons for the prompt.
     let existingLessons = "";
@@ -159,16 +178,30 @@ export async function tryDistill(ctx, event, agent) {
         /* ignore */
       }
     }
-    if (!provider || !model) return; // no LLM route available
+    if (!provider || !model) { dbg(`bail: no LLM route (provider=${provider} model=${model})`); return; }
+    dbg(`route provider=${provider} model=${model}`);
 
-    // Assemble LLM call.
+    // Assemble LLM call. One user message with three text blocks: a hand-built
+    // one-shot must still carry id + source (Message contract), and consecutive
+    // same-role turns can trip role-alternation on some providers.
     const messages = [
-      { role: "user", content: [{ type: "text", text: PROMPT }] },
-      { role: "user", content: [{ type: "text", text: `EXISTING LESSONS:\n${existingLessons || "(none)"}` }] },
-      { role: "user", content: [{ type: "text", text: `CONVERSATION:\n${content}` }] },
+      createUserMessage({
+        source: { kind: "user" },
+        content: [
+          { type: "text", text: PROMPT },
+          { type: "text", text: `EXISTING LESSONS:\n${existingLessons || "(none)"}` },
+          { type: "text", text: `CONVERSATION:\n${content}` },
+        ],
+      }),
     ];
 
-    const signal = AbortSignal.timeout(DISTILL_TIMEOUT_MS);
+    let signal;
+    try {
+      signal = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(DISTILL_TIMEOUT_MS) : undefined;
+    } catch {
+      signal = undefined;
+    }
+    dbg(`streaming: provider=${provider} model=${model} timeoutSignal=${signal ? "on" : "unavailable"}`);
     let response = "";
     try {
       for await (const chunk of ctx.llm.stream({
@@ -176,43 +209,49 @@ export async function tryDistill(ctx, event, agent) {
         model,
         messages,
         maxTokens: 500,
-        purpose: "distill",
         sessionId: agent.session.id,
         signal,
       })) {
         if (chunk.type === "text-delta" && chunk.text) response += chunk.text;
       }
     } catch (e) {
+      dbg(`bail: LLM stream failed (${e?.name}: ${e?.message})`);
       ctx.logger?.warn?.(`dsh-reflect distill: LLM call failed (${e.message})`);
       return;
     }
+    dbg(`streamed response chars=${response.length} head=${JSON.stringify(response.slice(0, 80))}`);
 
     // Parse output and queue candidates.
     const trimmed = response.trim();
-    if (!trimmed.startsWith("[")) return; // not JSON
+    if (!trimmed.startsWith("[")) { dbg(`bail: response not JSON array (head=${JSON.stringify(trimmed.slice(0, 40))})`); return; } // not JSON
     let parsed;
     try {
       parsed = JSON.parse(trimmed);
     } catch {
+      dbg("bail: invalid JSON from LLM");
       ctx.logger?.warn?.("dsh-reflect distill: LLM did not return valid JSON");
       return;
     }
-    if (!Array.isArray(parsed)) return;
+    if (!Array.isArray(parsed)) { dbg("bail: parsed JSON not an array"); return; }
 
     // Queue new entries; skip merge/drop for now (manual review only).
     const { queuePending } = await import("./pending.js");
     const { screen } = await import("./redact.js");
+    let queued = 0;
     for (const item of parsed) {
       if (item.verdict !== "new" || !item.text) continue;
       const screenResult = screen(item.text);
-      if (!screenResult.allowed) continue;
+      if (!screenResult.allowed) { dbg(`skip candidate blocked by redaction: ${JSON.stringify(item.text.slice(0, 40))}`); continue; }
       const tagStr = (item.tags || []).join(" ");
       queuePending(pendingFile, `- ${item.text}${tagStr ? " #" + tagStr : ""} @src:${sessionId}@distill`, "spike-auto-distill");
+      queued++;
     }
-    if (parsed.filter((i) => i.verdict === "new" && i.text).length > 0) {
-      ctx.logger?.info?.(`dsh-reflect distill: queued ${parsed.filter((i) => i.verdict === "new").length} candidate(s) for ${sessionId}`);
+    dbg(`done: parsed=${parsed.length} queued=${queued}`);
+    if (queued > 0) {
+      ctx.logger?.info?.(`dsh-reflect distill: queued ${queued} candidate(s) for ${sessionId}`);
     }
   } catch (e) {
+    dbg(`bail: unexpected error (${e?.name}: ${e?.message})`);
     ctx.logger?.warn?.(`dsh-reflect distill: unexpected error (${e.message})`);
   }
 }

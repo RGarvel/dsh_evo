@@ -33,9 +33,11 @@ import { pendingPreview, queuePending, readPending, resolvePending } from "./pen
 import { tryDistill } from "./distill.js";
 
 const name = "tool-reflect";
-// `llm` is required so the auto-distill loop can call ctx.llm.stream(); it is a
-// core service always present, so declaring it never leaves the plugin waiting.
-const inject = ["tools", "systemPrompt", "llm"];
+// llm is NOT injected: declaring it made this bundle-mounted plugin wait forever
+// for a service it can't resolve in its mount scope, so apply() never ran and the
+// session/event listener never registered. distill.js reads it optionally via
+// ctx.get("llm") at call time instead — the documented optional-service pattern.
+const inject = ["tools", "systemPrompt"];
 
 const SECTION_NAME = "dsh-reflect-memory";
 const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh", "reflect", "memory.md");
@@ -136,6 +138,15 @@ function pendingFile(scope, workspaceDir) {
 const render = (_args, value) => [{ type: "text", text: JSON.stringify(value) }];
 
 function apply(ctx) {
+  // spike diagnostic: prove apply() actually ran. A plugin stuck in inject-waiting
+  // never reaches here — which is exactly what spike.18 did. Stripped before release.
+  try {
+    writeFileSync(
+      join(homedir(), ".dsh", "reflect", "distill-debug.log"),
+      new Date().toISOString() + " apply: tool-reflect activated (spike.19)\n",
+      { flag: "a", encoding: "utf8" },
+    );
+  } catch { /* diagnostics must never block activation */ }
   ctx.tools.register(defineTool({
     name: "reflect_record",
     description:

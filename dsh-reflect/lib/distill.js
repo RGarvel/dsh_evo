@@ -128,6 +128,11 @@ export async function tryDistill(ctx, event, session) {
     const sessionQuery = ctx.get("sessionQuery");
     if (!sessionQuery) { dbg("bail: no sessionQuery service"); return; }
 
+    // llm is read optionally (never injected — injecting it deadlocks this
+    // bundle-mounted plugin in waiting). ctx.get resolves it at call time.
+    const llm = ctx.get("llm");
+    if (!llm) { dbg("bail: no llm service via ctx.get"); return; }
+
     const candidate = selectCandidate(event, session);
     if (!candidate) { dbg(`bail: not selected (seq=${event?.seq} type=${event?.type} reason=${event?.data?.reason?.kind} id=${session?.id} cwd=${session?.header?.cwd} inDebounce=${(Date.now() - (lastDistill.get(session?.id) ?? 0)) < DEBOUNCE_MS})`); return; }
 
@@ -218,7 +223,7 @@ export async function tryDistill(ctx, event, session) {
     dbg(`streaming: provider=${provider} model=${model} timeoutSignal=${signal ? "on" : "unavailable"}`);
     let response = "";
     try {
-      for await (const chunk of ctx.llm.stream({
+      for await (const chunk of llm.stream({
         provider,
         model,
         messages,

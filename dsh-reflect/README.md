@@ -11,7 +11,7 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 | `reflect_record` | 追加一条"耐久经验"（决策依据/验证过的命令/坑/偏好），按归一化文本去重。落盘 markdown，一行一条，尾部 `#tag` |
 | `reflect_recall` | 读取全局 + 工作区两层记忆（文件缺失=空） |
 | `reflect_consolidate` | **模型驱动的整表重写**：合并/删陈/压缩。重写前自动 `memory.md.bak-<时间戳>` 备份，激进整理零风险 |
-| 注入 seam | 监听 `system-prompt/assemble` 瀑布，把全局记忆 + 使用规约追加为 section（order 950），每轮组装实时读盘，超长截断并指路 recall。listener 全程 try/catch——记忆坏掉也不能弄崩 prompt |
+| 注入 seam | 监听 `system-prompt/assemble` 瀑布，把全局记忆 + 使用规约追加为 section（order 950），每轮组装实时读盘，超长截断并指路 recall。listener 全程 try/catch——记忆坏掉也不能弄崩 prompt。**注**：已查明更好的写法是 `ctx.systemPrompt.section({name, order, text: (context) => …})`——provider 能拿到 `context.agent.session.header.cwd`，工作区层因此可做（见 `docs/auto-distill-design.md` §3），迁移在路线图表内 |
 
 存储约定：
 
@@ -21,10 +21,10 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 ## 它刻意不是什么（v0 边界）
 
 - **不自动触发**：沉淀/整理由模型按注入规约主动调用（或你一句"把今天的坑记下来"）。自动回路是下一步（见路线图）；
-- **不读会话历史**：v0 不做"会话结束自动回看 transcript 蒸馏"——那需要 `dsh-session-query-sqlite` 挖日志 + 一次 LLM 提炼，成本与隐私策略先在工作区会话里讨论；
-- **workspace 注入未完成**：注入 section 目前只嵌**全局**条目（`AssembleContext` 只有 scope/signal，拿不到会话 cwd——这是 harness 侧的 seam 缺口，正好是 #4879 那类问题）；工作区条目靠 `reflect_recall` 拉取；
+- **不读会话历史**：v0 不做"会话结束自动回看 transcript 蒸馏"。零件其实齐了——`sessionQuery` 服务（`listSessions`/`filterEvents`/`searchEvents`）+ `llm.stream` 单发提炼 + `ctx.timer` 静默去抖，缺的是策略与安全门，见 `docs/auto-distill-design.md`；
+- **workspace 层只写不注入**：注入 section 目前只嵌**全局**条目。原因**不是** harness 缺口（早先记的"`AssembleContext` 拿不到 cwd"是只读 `.d.ts` 的错判——运行时 `assembleContextFor()` 一直把 `agent` 塞在 context 里，`scope === agent`，官方 plan-mode 就在用），只是 v0 没迁到 `section()` provider 写法。迁移后即修；
 - 去重是精确归一化匹配，不做语义判重（语义判重=consolidate 的活）；
-- 无 config 面（常量 + 两个 env），spike 阶段够用。
+- 无 config 面（常量 + 两个 env），spike 阶段够用。**注意**：一旦上自动回路，`settings` 注册 `reflect` 命名空间做总开关是硬要求（详见设计文档 §1.4）。
 
 ## 测试
 
@@ -50,13 +50,14 @@ dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect   # 或 npm 发布后 @
 - `package.json` 必须声明 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`——缺它 `dsh plugin add` 只当**普通依赖**装进 profile，不进 bundle 层栈（CLI 会 warning 一句，很容易被忽略）；
 - `file:` 依赖在 pnpm 下是**实体拷贝**，改源码后 `plugin add` 报 "Already up to date" 不重拷：要么手动同步 `~/.dsh/profiles/web/node_modules/@garvel/dsh-reflect/`，要么先 `plugin remove` 再 add。装载结果可用 `dsh --profile web --dump-config` 静态核对（看合成树里有没有 `tool-reflect` 层，不必重启）。
 
-## 路线图（在新会话 dsh_evo 里讨论）
+## 路线图
 
-1. **自动蒸馏**：`dsh-schedule` 每日任务 / `session/end` 类事件 → 子代理回看近期会话（sqlite query）→ 产出候选教训 → `reflect_record`（带人工复核开关）；
-2. **compaction 钩子**：checkpoint 生成本就是天然蒸馏点，能否在插件位上搭车（官方 seam 候选，可反哺 #4879）；
-3. **工作区级注入**：等 `AssembleContext` 透出 cwd/scope→workspace 映射，或退而求其次注入 AGENTS.md 指针；
-4. 语义判重（条目 embedding）、敏感词入库前 redaction、注入预算的 token 化（现按字符）；
-5. 与 skills 打通：高频教训自动起草 SKILL.md。
+**详细设计已成稿**：[`docs/auto-distill-design.md`](docs/auto-distill-design.md)（触发/选材/提炼/复核四环节，附零件清单与实测过的服务面）。骨架：
+
+1. **自动蒸馏**：`session/event` 折 `turn/end{completed}` + `ctx.timer` 静默去抖（**不是** `dsh-schedule`——它是会话内提醒器，不启动 agent turn）→ `sessionQuery` 选候选会话 → `llm.stream` 单发提炼 → 候选进 `pending.md`；
+2. **复核门 + redaction**：`userQuestions.ask()` 逐条批准，敏感模式在进 pending 前过滤，总开关进 `settings`；
+3. **注入面迁移**：`system-prompt/assemble` 监听 → `systemPrompt.section()` provider，顺带打通**工作区层注入**（`context.agent.session.header.cwd`，见"刻意不是什么"第 3 条）+ 用 `tokenMeter` 做预算；
+4. compaction 搭车（`compaction/summary` 事件是白捡的输入）、语义判重（`new/merge/drop` 三态交给提炼步骤）、高频教训→SKILL.md 草稿（`skills.register`）。
 
 ## 渊源
 

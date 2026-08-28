@@ -415,16 +415,18 @@ function apply(ctx) {
       try {
         writeFileSync(
           join(homedir(), ".dsh", "reflect", "distill-debug.log"),
-          new Date().toISOString() + ` listener: AUTO_DISTILL=${AUTO_DISTILL} reason=${event?.data?.reason?.kind} hasAgent=${Boolean(subject)}\n`,
+          new Date().toISOString() + ` listener: AUTO_DISTILL=${AUTO_DISTILL} reason=${event?.data?.reason?.kind} hasSubject=${Boolean(subject)}\n`,
           { flag: "a", encoding: "utf8" },
         );
       } catch { /* diagnostics must never break the session */ }
     }
     if (!AUTO_DISTILL) return;
     if (event?.type !== "turn/end" || event?.data?.reason?.kind !== "completed") return;
-    const agent = subject;
-    if (!agent) return;
-    tryDistill(ctx, event, agent).catch(() => {});
+    // session/event's subject is the Session (dsh-agent-loop keys on `subject === session`),
+    // so it carries .id / .header.cwd / .requestContext() directly — no `.session` hop.
+    const session = subject;
+    if (!session) return;
+    tryDistill(ctx, event, session).catch(() => {});
   }, { global: true });
 
   // A `section()` provider, not a `system-prompt/assemble` listener: the registry

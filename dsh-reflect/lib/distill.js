@@ -70,17 +70,20 @@ function dbg(msg) {
 
 /**
  * Decide whether one session qualifies for a distillation pass.
- * Returns { qualified: true, cwd, sessionId } or null.
+ * `session` is the Session instance the `session/event` listener receives as its
+ * subject (NOT an agent — dsh-agent-loop's own listener keys on `subject === session`).
+ * Returns { sessionId, cwd } or null.
  */
-function selectCandidate(event, agent, allSessions) {
+function selectCandidate(event, session) {
   if (event.type !== "turn/end") return null;
   if (event.data?.reason?.kind !== "completed") return null;
-  const sessionId = agent.session.id;
+  const sessionId = session?.id;
+  if (!sessionId) return null;
   const now = Date.now();
   const last = lastDistill.get(sessionId) ?? 0;
   if (now - last < DEBOUNCE_MS) return null;
   // Need cwd to decide global vs workspace.
-  const cwd = agent.session.header?.cwd;
+  const cwd = session.header?.cwd;
   if (!cwd) return null;
   lastDistill.set(sessionId, now);
   return { sessionId, cwd };
@@ -114,13 +117,13 @@ async function fetchTurnContent(sessionQuery, sessionId, sinceSeq, maxEvents = 2
  * Core distillation: sessionQuery + llm + pending.
  * Fire-and-forget; errors are caught and logged.
  */
-export async function tryDistill(ctx, event, agent) {
+export async function tryDistill(ctx, event, session) {
   try {
     const sessionQuery = ctx.get("sessionQuery");
     if (!sessionQuery) { dbg("bail: no sessionQuery service"); return; }
 
-    const candidate = selectCandidate(event, agent, null);
-    if (!candidate) { dbg(`bail: not selected (seq=${event?.seq} type=${event?.type} reason=${event?.data?.reason?.kind} cwd=${agent?.session?.header?.cwd} inDebounce=${(Date.now() - (lastDistill.get(agent?.session?.id) ?? 0)) < DEBOUNCE_MS})`); return; }
+    const candidate = selectCandidate(event, session);
+    if (!candidate) { dbg(`bail: not selected (seq=${event?.seq} type=${event?.type} reason=${event?.data?.reason?.kind} id=${session?.id} cwd=${session?.header?.cwd} inDebounce=${(Date.now() - (lastDistill.get(session?.id) ?? 0)) < DEBOUNCE_MS})`); return; }
 
     const { sessionId, cwd } = candidate;
     const isWorkspace = cwd !== undefined;
@@ -157,23 +160,25 @@ export async function tryDistill(ctx, event, agent) {
       }
     }
 
-    // Get provider/model from session header config.
+    // Resolve the LLM route from the Session's own folded request events.
+    // `requestContext()` is the resolved provider+model; `requestHeader().config`
+    // is the call config (also carries provider+model). Both are Session methods.
     let provider = null;
     let model = null;
     try {
-      const header = agent.session.requestHeader?.();
-      if (header?.config) {
-        provider = header.config.provider;
-        model = header.config.model;
+      const rc = session.requestContext?.();
+      if (rc?.provider && rc?.model) {
+        provider = rc.provider;
+        model = rc.model;
       }
     } catch {
-      /* requestHeader may not be available — fall through to agent.options */
+      /* requestContext may be absent before the first request */
     }
     if (!provider || !model) {
       try {
-        const opts = agent.options;
-        if (opts?.provider) provider = opts.provider;
-        if (opts?.model) model = opts.model;
+        const header = session.requestHeader?.();
+        if (header?.config?.provider) provider = header.config.provider;
+        if (header?.config?.model) model = header.config.model;
       } catch {
         /* ignore */
       }
@@ -209,7 +214,7 @@ export async function tryDistill(ctx, event, agent) {
         model,
         messages,
         maxTokens: 500,
-        sessionId: agent.session.id,
+        sessionId,
         signal,
       })) {
         if (chunk.type === "text-delta" && chunk.text) response += chunk.text;

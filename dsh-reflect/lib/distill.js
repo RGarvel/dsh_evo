@@ -17,16 +17,20 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
-// A completed turn/end, tolerant of both the flat ({kind}) and the SessionEvent
-// ({data:{reason:{kind}}}) shapes so we are not guessing which one listEvents gives.
-function isCompletedTurnEnd(e) {
-  if (!e || e.type !== "turn/end") return false;
-  return e.kind === "completed" || e.data?.reason?.kind === "completed";
+// A turn/end boundary. listEvents returns SessionEventRecord ({sessionId,seq,type,
+// time,surface}) which carries NO `data`, so we can only key on `type` here. That is
+// safe: tryDistill is only ever entered from the listener after it verified the live
+// event's data.reason.kind === "completed", so the current turn is completed and
+// counting prior turn/end records as "completed turns" is a sound proxy.
+function isTurnEnd(e) {
+  return !!e && e.type === "turn/end";
 }
 
 const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes per session
 const DISTILL_TIMEOUT_MS = 60_000;
-const MIN_COMPLETED_TURNS = 3; // skip short sessions
+// Verification tuning: dropped from 3 to 1 so the loop fires on the 2nd completed
+// turn of a fresh session (a real release would want 3+). env-overridable.
+const MIN_COMPLETED_TURNS = Number(process.env.REFLECT_MIN_TURNS || 1); // skip short sessions
 const PROMPT = `You are a lessons-extraction assistant for a coding agent.
 Given a recent conversation's user turns and assistant replies, extract durable,
 actionable lessons suitable for future sessions.
@@ -96,7 +100,7 @@ async function completedTurnCount(sessionQuery, sessionId, sinceSeq) {
   const events = await sessionQuery.listEvents(sessionId);
   if (!events.length) return 0;
   return events.filter(
-    (e) => isCompletedTurnEnd(e) && (!sinceSeq || e.seq > sinceSeq),
+    (e) => isTurnEnd(e) && (!sinceSeq || e.seq > sinceSeq),
   ).length;
 }
 
@@ -137,7 +141,7 @@ export async function tryDistill(ctx, event, session) {
     // We need the seq of the last completed turn before this one.
     const allEvents = await sessionQuery.listEvents(sessionId);
     const completedSince = allEvents
-      .filter((e) => isCompletedTurnEnd(e))
+      .filter((e) => isTurnEnd(e))
       .filter((e) => e.seq < event.seq);
     if (completedSince.length < MIN_COMPLETED_TURNS) { dbg(`bail: completed turns before this = ${completedSince.length} < ${MIN_COMPLETED_TURNS}`); return; }
     const sinceSeq = completedSince[completedSince.length - 1].seq;

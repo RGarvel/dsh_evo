@@ -43,6 +43,13 @@ const WORKSPACE_PENDING_REL = join(".dsh", "memory-pending.md");
 const INJECT_MAX_TOKENS = Number(process.env.DSH_REFLECT_INJECT_MAX_TOKENS || 600);
 // Legacy direct override in characters; when set it wins over the token budget.
 const INJECT_MAX_CHARS = Number(process.env.DSH_REFLECT_INJECT_MAX_CHARS || 0);
+// Spike probe: write every session/event to events.jsonl so we can verify
+// {global:true} listeners see ALL sessions' turns, not just the current one.
+const EVENT_LOG = (() => {
+  const raw = process.env.DSH_REFLECT_EVENT_LOG;
+  if (raw === "off") return "";
+  return raw ? raw : join(homedir(), ".dsh", "reflect", "events.jsonl");
+})();
 const MAX_ENTRIES = 500;
 
 /**
@@ -332,7 +339,53 @@ function apply(ctx) {
     });
   }
 
-  // ---- injection ----
+  // ---- manual distill command (spike: lists sessions with completed turns only,
+  // no auto-trigger yet — waiting on the {global:true} event-listener probe) ----
+  if (commands !== undefined) {
+    commands.register({
+      name: "reflect-distill",
+      description: "List sessions that have completed turns (for manual distillation).",
+      input: { hint: "[workspace|global] [--count N]" },
+      async handler({ rawInput, agent }) {
+        const parts = String(rawInput || "").trim().split(/\s+/).filter(Boolean);
+        const scope = parts[0] === "global" || parts[0] === "workspace" ? parts.shift() : "workspace";
+        const countMatch = parts.find((p) => p.startsWith("--count="));
+        const maxSessions = countMatch ? Number.parseInt(countMatch.split("=")[1], 10) || 10 : 10;
+        if (Number.isNaN(maxSessions) || maxSessions < 1) return { kind: "error", text: "reflect-distill: --count must be a positive integer" };
+        // Stub: in the real loop this would call sessionQuery.listSessions + filterEvents.
+        // For now, return a placeholder that the probe events.jsonl will confirm the
+        // listener is alive when the user checks it after a restart.
+        return {
+          kind: "success",
+          text: `reflect-distill (spike stub): scope=${scope}, max=${maxSessions}\n` +
+            `This command is a skeleton — auto-distillation is not yet wired.\n` +
+            `Use /reflect-review to approve queued candidates.\n` +
+            `Check ~/.dsh/reflect/events.jsonl to verify the session/event listener fired.`,
+        };
+      },
+    });
+  }
+
+  // ---- spike probe: {global:true} session/event listener ----
+  // Logs every event to EVENT_LOG so we can answer "does this listener see ALL
+  // sessions' events, or only the current one?" by reading the file after a restart.
+  if (EVENT_LOG) {
+    ctx.on("session/event", (event) => {
+      try {
+        const line = JSON.stringify({
+          at: new Date().toISOString(),
+          type: event?.type,
+          kind: event?.kind,
+          sessionId: event?.sessionId,
+          agentId: event?.agentId,
+        });
+        writeFileSync(EVENT_LOG, line + "\n", { flag: "a", encoding: "utf8" });
+      } catch {
+        /* probe must never break the session */
+      }
+    }, { global: true });
+  }
+
   // A `section()` provider, not a `system-prompt/assemble` listener: the registry
   // owns disposal and rejects a duplicate name outright (no hand-rolled idempotency
   // check), and — decisively — the provider receives the assembly context, whose

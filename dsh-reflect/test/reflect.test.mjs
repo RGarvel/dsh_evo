@@ -78,8 +78,12 @@ const ctx = {
 };
 apply(ctx);
 check("E1 four tools registered", ["reflect_record", "reflect_recall", "reflect_consolidate", "reflect_pending"].every((n) => registered.find((t) => t.name === n)));
-check("E2 injection is a section, not a waterfall listener", sections.length === 1 && listeners.length === 0
+check("E2 injection is a section, not a waterfall listener", sections.length === 1 && listeners.length === 1
+  && listeners[0].ev === "session/event" && listeners[0].opts?.global === true
   && sections[0].name === "dsh-reflect-memory" && sections[0].order === 950 && typeof sections[0].text === "function");
+check("E2b session/event probe listener registered with global:true", listeners.some(
+  (l) => l.ev === "session/event" && l.opts?.global === true
+));
 
 const rec = registered.find((t) => t.name === "reflect_record");
 const recRes = await rec.execute({ text: "工具注册走 ctx.tools.register", tags: ["dsh"], workspace_dir: ws });
@@ -158,7 +162,10 @@ check("G7 stale index is reported, never guessed", pending.resolvePending(pf, me
 
 // ---- H. tools + slash command over the same store ----
 const pend = registered.find((t) => t.name === "reflect_pending");
-check("H1 review command registered once", commandDefs.length === 1 && commandDefs[0].name === "reflect-review" && typeof commandDefs[0].handler === "function");
+check("H1 review + distill commands registered", commandDefs.length === 2
+  && commandDefs.some((d) => d.name === "reflect-review")
+  && commandDefs.some((d) => d.name === "reflect-distill")
+  && typeof commandDefs.find((d) => d.name === "reflect-review")?.handler === "function");
 const globalBefore = store.readEntries(globalFile).length;
 const refused = await rec.execute({ text: "记下来：" + vendorKey, scope: "global" });
 check("H2 record refuses secrets without writing", refused.stored === false && /credential screen/.test(refused.reason) && store.readEntries(globalFile).length === globalBefore);

@@ -370,14 +370,14 @@ function apply(ctx) {
   // Logs every event to EVENT_LOG so we can answer "does this listener see ALL
   // sessions' events, or only the current one?" by reading the file after a restart.
   if (EVENT_LOG) {
-    ctx.on("session/event", (event) => {
+    ctx.on("session/event", (subject, event) => {
       try {
         const line = JSON.stringify({
           at: new Date().toISOString(),
-          type: event?.type,
+          subjectType: typeof subject,
+          eventType: event?.type,
           kind: event?.kind,
-          sessionId: event?.sessionId,
-          agentId: event?.agentId,
+          seq: event?.seq,
         });
         writeFileSync(EVENT_LOG, line + "\n", { flag: "a", encoding: "utf8" });
       } catch {

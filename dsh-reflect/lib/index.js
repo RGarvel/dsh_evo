@@ -38,6 +38,9 @@ const name = "tool-reflect";
 // session/event listener never registered. distill.js reads it optionally via
 // ctx.get("llm") at call time instead — the documented optional-service pattern.
 const inject = ["tools", "systemPrompt"];
+// spike.21: stamp every diagnostic line with version + process pid so a restart
+// straddle can't confuse which process handled a given turn/end. Stripped on release.
+const SPIKE_VER = "21";
 
 const SECTION_NAME = "dsh-reflect-memory";
 const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh", "reflect", "memory.md");
@@ -143,7 +146,7 @@ function apply(ctx) {
   try {
     writeFileSync(
       join(homedir(), ".dsh", "reflect", "distill-debug.log"),
-      new Date().toISOString() + " apply: tool-reflect activated (spike.19)\n",
+      new Date().toISOString() + ` apply: tool-reflect activated (spike.${SPIKE_VER} pid=${process?.pid ?? "?"})\n`,
       { flag: "a", encoding: "utf8" },
     );
   } catch { /* diagnostics must never block activation */ }
@@ -428,7 +431,7 @@ function apply(ctx) {
       try {
         writeFileSync(
           join(homedir(), ".dsh", "reflect", "distill-debug.log"),
-          new Date().toISOString() + ` listener: AUTO_DISTILL=${AUTO_DISTILL} reason=${event?.data?.reason?.kind} hasSubject=${Boolean(subject)}\n`,
+          new Date().toISOString() + ` listener: v${SPIKE_VER} pid=${process?.pid ?? "?"} AUTO_DISTILL=${AUTO_DISTILL} reason=${event?.data?.reason?.kind} seq=${event?.seq} sid=${String(subject?.id ?? "").slice(-6)}\n`,
           { flag: "a", encoding: "utf8" },
         );
       } catch { /* diagnostics must never break the session */ }

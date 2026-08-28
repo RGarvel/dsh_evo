@@ -66,7 +66,7 @@ const lastDistill = new Map();
 const DEBUG_FILE = join(homedir(), ".dsh", "reflect", "distill-debug.log");
 function dbg(msg) {
   try {
-    writeFileSync(DEBUG_FILE, new Date().toISOString() + " " + msg + "\n", { flag: "a", encoding: "utf8" });
+    writeFileSync(DEBUG_FILE, new Date().toISOString() + ` pid=${process?.pid ?? "?"} ` + msg + "\n", { flag: "a", encoding: "utf8" });
   } catch {
     /* diagnostics must never break distill */
   }

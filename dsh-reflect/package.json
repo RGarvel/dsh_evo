@@ -1,0 +1,50 @@
+{
+  "name": "@garvel/dsh-reflect",
+  "version": "0.0.1-spike.1",
+  "description": "File-level self-learning prototype for DeepSeek Harness: a small persistent memory store (per-workspace + global markdown), model-driven consolidation tools, and a system-prompt injection seam.",
+  "keywords": [
+    "cordis",
+    "cordis-plugin",
+    "dsh",
+    "deepseek-harness",
+    "memory",
+    "self-learning",
+    "reflect"
+  ],
+  "license": "MIT",
+  "author": "garvel <runjw123@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RGarvel/dsh_evo.git"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./store": "./lib/store.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/reflect.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "cordisPlugin": {
+    "name": "@garvel/dsh-reflect",
+    "require": "@deepseek-ai/dsh-base"
+  }
+}

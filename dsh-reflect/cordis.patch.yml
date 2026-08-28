@@ -1,0 +1,6 @@
+# The dsh-reflect bundle patch: mounts the memory tools + prompt injection.
+# Registers into the host `tools` registry and listens on the global
+# `system-prompt/assemble` waterfall; no isolate realm needed.
+- insert:
+    - id: tool-reflect
+      name: '@garvel/dsh-reflect'

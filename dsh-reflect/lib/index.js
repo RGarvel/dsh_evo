@@ -377,7 +377,8 @@ function apply(ctx) {
     if (EVENT_LOG) {
       try {
         // Debug: dump all own keys to discover actual event shape
-        const keys = event ? Object.keys(event) : [];
+        const keys = event ? Object.getOwnPropertyNames(event) : [];
+        const dataKeys = event?.data ? Object.getOwnPropertyNames(event.data) : [];
         const line = JSON.stringify({
           at: new Date().toISOString(),
           subjectType: typeof subject,
@@ -385,6 +386,7 @@ function apply(ctx) {
           reason: event?.data?.reason?.kind,
           seq: event?.seq,
           keys: keys,
+          dataKeys: dataKeys,
         });
         writeFileSync(EVENT_LOG, line + "\n", { flag: "a", encoding: "utf8" });
       } catch {

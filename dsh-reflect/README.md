@@ -29,7 +29,7 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 - ~~workspace 层只写不注入~~ **已修**：注入改为 per-session provider，工作区层跟着 `header.cwd` 进提示词。留这条是为了记成因——早先那句"`AssembleContext` 拿不到 cwd"是**只读 `.d.ts` 的错判**：运行时 `assembleContextFor()` 一直把 `agent` 塞在 context 里（`scope === agent`），官方 plan-mode 就在用。**`.d.ts` 不是契约，看调用点**；
 - **不自称精确 token 计数**：预算除数直接取 harness 自己的 `estimateSystemTokens`（`ceil(len/4) + 4`），没有 embedding、没有 tiktoken。曾打算调 `tokenMeter.estimateMessage()`，读完源码放弃——那是面向**会话消息**的（要 role framing、`+4` per block），拿伪造 Message 喂它只会让预算和循环实际计费不一致；
 - 去重是精确归一化匹配，不做语义判重（语义判重=consolidate 的活）；
-- 无 config 面（常量 + 四个 env：`DSH_REFLECT_GLOBAL_FILE` / `_GLOBAL_PENDING` / `_INJECT_MAX_TOKENS` / 直接覆盖用的 `_INJECT_MAX_CHARS`），spike 阶段够用。**注意**：一旦上自动回路，`settings` 注册 `reflect` 命名空间做总开关是硬要求（详见设计文档 §1.4）。
+- 无 config 面（常量 + 五个 env：`DSH_REFLECT_GLOBAL_FILE` / `_GLOBAL_PENDING` / `_INJECT_MAX_TOKENS` / 直接覆盖用的 `_INJECT_MAX_CHARS` / 诊断用的 `_ASSEMBLY_FILE`），spike 阶段够用。`_ASSEMBLY_FILE` 每次组装覆盖写一份 `{stage, cwd, global, workspace, pending, chars}`——`stage` 直接点名 cwd 那条链断在哪一格，是"插件挂载了但某一层没进来"的唯一取证面，**正式发布前要拿掉**（设 `off` 即关）。**注意**：一旦上自动回路，`settings` 注册 `reflect` 命名空间做总开关是硬要求（详见设计文档 §1.4）。
 
 ## 测试
 
@@ -37,7 +37,7 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 npm test
 ```
 
-61 项断言：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→注入 section）+ **render 元数回归**（E13/E14）+ **凭据筛查**（F1-F10，含"git sha 与正常中文不许误伤""拒绝时不许回显"两条反例）+ **队列**（G1-G7：溯源、配对去重、批准迁移、备份留痕、序号漂移只报不猜）+ **工具与 `/reflect-review` 共用同一存储**（H1-H6）+ **注入面**（E9-E12b：工作区层只在有 cwd 时出现、provider 对畸形/敌意 context 不抛、缺 `agent` 只 warn 一次；I1-I4：队列只报条数不报内容、token 预算整行裁剪）。
+63 项断言（含探针自身的 I5/I6：解析成功时记下真实 cwd，缺 agent 时记下 `no-agent` 而不是静默少一层）：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→注入 section）+ **render 元数回归**（E13/E14）+ **凭据筛查**（F1-F10，含"git sha 与正常中文不许误伤""拒绝时不许回显"两条反例）+ **队列**（G1-G7：溯源、配对去重、批准迁移、备份留痕、序号漂移只报不猜）+ **工具与 `/reflect-review` 共用同一存储**（H1-H6）+ **注入面**（E9-E12b：工作区层只在有 cwd 时出现、provider 对畸形/敌意 context 不抛、缺 `agent` 只 warn 一次；I1-I4：队列只报条数不报内容、token 预算整行裁剪）。
 
 > 本机 `npm test` 会被执行策略拦（`npm.ps1 cannot be loaded`），直接 `node test/reflect.test.mjs`。
 

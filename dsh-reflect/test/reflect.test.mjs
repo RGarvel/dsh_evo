@@ -14,6 +14,10 @@ process.env.DSH_REFLECT_GLOBAL_FILE = globalFile;
 // The queue needs isolating too, or a `/reflect-review global list` test would
 // read (and later write) the real ~/.dsh/reflect/pending.md.
 process.env.DSH_REFLECT_GLOBAL_PENDING = globalPending;
+// The per-assembly probe file needs isolating too: the section provider writes it,
+// and it is what records WHICH link of the cwd chain came up empty.
+const assemblyFile = join(root, "assembly.json");
+process.env.DSH_REFLECT_ASSEMBLY_FILE = assemblyFile;
 
 const store = await import("../lib/store.js");
 const { apply, inject, name } = await import("../lib/index.js");
@@ -178,6 +182,12 @@ check("I2 queue CONTENT never reaches the prompt", !withPending.includes("待复
 check("I3 approved content does reach it", withPending.includes("命令面复核的候选"));
 const tight = store.renderInjection([{ text: "AAA".repeat(26) }, { text: "BBB".repeat(26) }, { text: "CCC".repeat(26) }], [], { maxTokens: 40 });
 check("I4 token budget drops whole rows and declares how many", tight.length <= 160 && tight.includes("条未注入") && !tight.includes("CCC"));
+const shape = JSON.parse(readFileSync(assemblyFile, "utf8"));
+check("I5 the probe records a resolved cwd and the counts behind it", shape.stage === "ok" && shape.cwd === ws
+  && shape.workspace === store.readEntries(memHere).length && shape.global === store.readEntries(globalFile).length && shape.assemblies > 0);
+section.text({});
+const shapeBad = JSON.parse(readFileSync(assemblyFile, "utf8"));
+check("I6 a context without agent is recorded as no-agent, not silently skipped", shapeBad.stage === "no-agent" && shapeBad.cwd === null && shapeBad.assemblies > shape.assemblies);
 
 console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
 process.exit(failures ? 1 : 0);

@@ -15,11 +15,13 @@
  *
  * @module @garvel/dsh-reflect
  */
+import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
+  CHARS_PER_TOKEN,
   parseLine,
   recordEntry,
   readEntries,
@@ -42,6 +44,42 @@ const INJECT_MAX_TOKENS = Number(process.env.DSH_REFLECT_INJECT_MAX_TOKENS || 60
 // Legacy direct override in characters; when set it wins over the token budget.
 const INJECT_MAX_CHARS = Number(process.env.DSH_REFLECT_INJECT_MAX_CHARS || 0);
 const MAX_ENTRIES = 500;
+
+/**
+ * Self-observation for the injection face.
+ *
+ * "Warn once" is not enough to debug a silently dropped layer: what matters is
+ * WHICH LINK of `context.agent?.session?.header?.cwd` came up empty on the turn
+ * where it happened. So each assembly overwrites a tiny state file. It is a spike
+ * diagnostic (a 200-byte sync write per model request), goes before any real
+ * release, and `DSH_REFLECT_ASSEMBLY_FILE=off` disables it. Failing to write it
+ * must never fail the request, hence the inner catch.
+ */
+const ASSEMBLY_FILE = (() => {
+  const raw = process.env.DSH_REFLECT_ASSEMBLY_FILE;
+  if (raw === "off") return "";
+  return raw ? raw : join(homedir(), ".dsh", "reflect", "assembly.json");
+})();
+let assemblies = 0;
+
+function reportShape(state) {
+  if (!ASSEMBLY_FILE) return;
+  try {
+    assemblies++;
+    writeFileSync(ASSEMBLY_FILE, JSON.stringify({ ...state, assemblies, at: new Date().toISOString() }, null, 2), "utf8");
+  } catch {
+    /* diagnostics are never allowed to cost a turn */
+  }
+}
+
+/** Which link of the cwd chain broke — the answer the whole probe exists for. */
+function cwdStage(agent) {
+  if (agent === void 0) return "no-agent";
+  if (agent.session === void 0) return "no-session";
+  if (agent.session.header === void 0) return "no-header";
+  if (agent.session.header.cwd === void 0) return "no-cwd";
+  return "ok";
+}
 
 /** Resolve which file a scoped call operates on. */
 function targetFile(scope, workspaceDir) {
@@ -316,16 +354,27 @@ function apply(ctx) {
           ctx.logger?.warn?.("dsh-reflect: the assemble context carried no `agent`; workspace memory will not be injected (harness shape changed?)");
         }
         const cwd = agent?.session?.header?.cwd;
+        const globalEntries = readEntries(GLOBAL_FILE);
         const workspaceEntries = cwd ? readEntries(join(cwd, WORKSPACE_REL)) : [];
         // Count both queues a session could be waiting on; contents never render here.
         const pendingCount =
           readPending(GLOBAL_PENDING).length +
           (cwd ? readPending(join(cwd, WORKSPACE_PENDING_REL)).length : 0);
-        return renderInjection(readEntries(GLOBAL_FILE), workspaceEntries, {
+        const text = renderInjection(globalEntries, workspaceEntries, {
           maxTokens: INJECT_MAX_TOKENS,
           maxChars: INJECT_MAX_CHARS,
           pendingCount,
         });
+        reportShape({
+          stage: cwdStage(agent),
+          cwd: cwd ?? null,
+          global: globalEntries.length,
+          workspace: workspaceEntries.length,
+          pending: pendingCount,
+          chars: text.length,
+          budgetChars: INJECT_MAX_CHARS > 0 ? INJECT_MAX_CHARS : INJECT_MAX_TOKENS * CHARS_PER_TOKEN,
+        });
+        return text;
       } catch {
         // Memory is an enhancement; it must never break a model request.
         return "";

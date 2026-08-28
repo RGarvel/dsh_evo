@@ -54,7 +54,7 @@ const lastDistill = new Map();
  */
 function selectCandidate(event, agent, allSessions) {
   if (event.type !== "turn/end") return null;
-  if (event.reason !== "completed") return null;
+  if (event.reason?.kind !== "completed") return null;
   const sessionId = agent.session.id;
   const now = Date.now();
   const last = lastDistill.get(sessionId) ?? 0;

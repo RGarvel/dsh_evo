@@ -380,7 +380,7 @@ function apply(ctx) {
           at: new Date().toISOString(),
           subjectType: typeof subject,
           eventType: event?.type,
-          kind: event?.reason,
+          reason: event?.reason?.kind,
           seq: event?.seq,
         });
         writeFileSync(EVENT_LOG, line + "\n", { flag: "a", encoding: "utf8" });
@@ -390,7 +390,7 @@ function apply(ctx) {
     }
     // Distill: fire-and-forget, guarded by env and event shape.
     if (!AUTO_DISTILL) return;
-    if (event?.type !== "turn/end" || event?.reason !== "completed") return;
+    if (event?.type !== "turn/end" || event?.reason?.kind !== "completed") return;
     const agent = subject;
     if (!agent) return;
     tryDistill(ctx, event, agent).catch(() => {});

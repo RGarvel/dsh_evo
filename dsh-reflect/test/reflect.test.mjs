@@ -9,7 +9,11 @@ import { join } from "node:path";
 
 const root = mkdtempSync(join(tmpdir(), "reflect-"));
 const globalFile = join(root, "g", "memory.md");
+const globalPending = join(root, "g", "pending.md");
 process.env.DSH_REFLECT_GLOBAL_FILE = globalFile;
+// The queue needs isolating too, or a `/reflect-review global list` test would
+// read (and later write) the real ~/.dsh/reflect/pending.md.
+process.env.DSH_REFLECT_GLOBAL_PENDING = globalPending;
 
 const store = await import("../lib/store.js");
 const { apply, inject, name } = await import("../lib/index.js");
@@ -58,9 +62,14 @@ check("D3 truncation marker", tiny.length <= 210 && tiny.includes("reflect_recal
 // ---- E. plugin wiring (fake ctx, real defineTool/HarnessError) ----
 const registered = [];
 const listeners = [];
-const ctx = { tools: { register: (d) => registered.push(d) }, on: (ev, fn, opts) => listeners.push({ ev, fn, opts }) };
+const commandDefs = [];
+const ctx = {
+  tools: { register: (d) => registered.push(d) },
+  on: (ev, fn, opts) => listeners.push({ ev, fn, opts }),
+  get: (key) => (key === "commands" ? { register: (d) => { commandDefs.push(d); return () => {}; } } : undefined),
+};
 apply(ctx);
-check("E1 three tools registered", ["reflect_record", "reflect_recall", "reflect_consolidate"].every((n) => registered.find((t) => t.name === n)));
+check("E1 four tools registered", ["reflect_record", "reflect_recall", "reflect_consolidate", "reflect_pending"].every((n) => registered.find((t) => t.name === n)));
 check("E2 assemble listener global+guarded", listeners.length === 1 && listeners[0].ev === "system-prompt/assemble" && listeners[0].opts?.global === true);
 
 const rec = registered.find((t) => t.name === "reflect_record");
@@ -104,6 +113,58 @@ check("E13 render shows value, not arguments", recallOut.length === 1
   && recallOut[0].text.includes('"count":7') && !recallOut[0].text.includes("scope"));
 const recordOut = await rec.output.render({ text: "lesson", scope: "workspace" }, { file: "F", stored: true, count: 2 });
 check("E14 record render carries stored/count", recordOut[0].text.includes('"stored":true') && !recordOut[0].text.includes("lesson"));
+
+// ---- F. credential screening ----
+// A stored secret is broadcast into every future system prompt, so the screen is
+// the one component allowed to say no. Synthetic shapes only — never a real value.
+const redact = await import("../lib/redact.js");
+const sha = "0f3a9b2c7d1e4f5a6b7c8d9e0f1a2b3c4d5e6f70"; // lowercase hex, digits, no symbol/upper
+const vendorKey = "xk_live_" + "9Fj2aB7dQe5rTg8y" + "_Ui3oPq7vWs-EUd";
+check("F1 git sha still passes", redact.screen("钉在 rev " + sha + " 之前").hits.length === 0);
+check("F2 ordinary prose passes", redact.screen("密钥轮换后要重启 web，配置不热重载 #ops").hits.length === 0);
+check("F3 vendor key shape blocked", redact.screen("把 " + vendorKey + " 写进 patch").hits.length > 0);
+check("F4 assignment blocked", redact.screen("password: hunter2please").hits[0] === "assignment");
+check("F5 bearer blocked", redact.screen("Authorization: Bearer abc123def456ghi").hits.includes("bearer"));
+check("F6 pem header blocked", redact.screen("-----BEGIN PRIVATE KEY-----").hits.includes("private-key-block"));
+check("F7 url secret blocked", redact.screen("https://api/x?token=abc123def456").hits.includes("url-secret"));
+check("F8 base64 blob blocked", redact.screen("Q2hhbmdlVGhpc1RvU29tZXRoaW5nRGlnaXQxMjM0NTY=").hits.includes("high-entropy"));
+check("F9 long line clipped", redact.screen("x1 ".repeat(300)).truncated === true && redact.screen("x1 ".repeat(300)).text.length <= 400);
+check("F10 refusal never echoes the value", !redact.blockReason(redact.screen(vendorKey).hits).includes(vendorKey));
+
+// ---- G. review queue ----
+const pending = await import("../lib/pending.js");
+const pf = join(ws, ".dsh", "memory-pending.md");
+const memHere = join(ws, ".dsh", "memory.md");
+const before = store.readEntries(memHere).length;
+check("G1 queue writes source+tags", pending.queuePending(pf, { text: "候选一", tags: ["c"], source: "session-abc@12" }).stored === true
+  && readFileSync(pf, "utf8").includes("- 候选一 @src:session-abc@12 #c"));
+check("G2 dedup against approved memory", pending.queuePending(pf, { text: "候选一" }, store.readEntries(memHere)).reason === "duplicate");
+const g3 = pending.readPending(pf)[0];
+check("G3 parse keeps text/tags/source apart", g3.text === "候选一" && g3.tags[0] === "c" && g3.source === "session-abc@12");
+check("G4 drop leaves the rest queued", pending.queuePending(pf, { text: "候选二" }).stored === true
+  && pending.resolvePending(pf, memHere, [], [2], () => ({ stored: false })).count === 1);
+const g5 = pending.resolvePending(pf, memHere, [1], [], (f, t, tags) => store.recordEntry(f, t, tags));
+check("G5 approve moves into memory", g5.moved.length === 1 && g5.count === 0 && store.readEntries(memHere).length === before + 1);
+check("G6 provenance survives in the backup", !!g5.backup && readFileSync(g5.backup, "utf8").includes("@src:session-abc@12"));
+check("G7 stale index is reported, never guessed", pending.resolvePending(pf, memHere, [9], [], () => ({ stored: false })).invalid.join() === "9");
+
+// ---- H. tools + slash command over the same store ----
+const pend = registered.find((t) => t.name === "reflect_pending");
+check("H1 review command registered once", commandDefs.length === 1 && commandDefs[0].name === "reflect-review" && typeof commandDefs[0].handler === "function");
+const globalBefore = store.readEntries(globalFile).length;
+const refused = await rec.execute({ text: "记下来：" + vendorKey, scope: "global" });
+check("H2 record refuses secrets without writing", refused.stored === false && /credential screen/.test(refused.reason) && store.readEntries(globalFile).length === globalBefore);
+const queuedOut = await pend.execute({ action: "queue", scope: "workspace", workspace_dir: ws, text: "命令面复核的候选", source: "session-zzz@9" });
+check("H3 queue action works", queuedOut.stored === true && queuedOut.count === 1);
+const cmd = commandDefs[0];
+const agentHere = { session: { header: { cwd: ws } } };
+const approved = await cmd.handler({ rawInput: "approve 1", agent: agentHere, commandId: "c1", attachments: [], signal: undefined });
+check("H4 command approves by index", approved.kind === "success" && /入库/.test(approved.text)
+  && store.readEntries(memHere).some((e) => e.text === "命令面复核的候选"));
+const listed = await cmd.handler({ rawInput: "global list", agent: agentHere, commandId: "c2", attachments: [], signal: undefined });
+check("H5 global scope skips the cwd requirement", listed.kind === "success" && /现有 0 条/.test(listed.text));
+const noWs = await cmd.handler({ rawInput: "approve 1", agent: {}, commandId: "c3", attachments: [], signal: undefined });
+check("H6 command without a cwd errors instead of guessing", noWs.kind === "error" && /global/.test(noWs.text));
 
 console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
 process.exit(failures ? 1 : 0);

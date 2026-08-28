@@ -26,13 +26,17 @@ import {
   renderInjection,
   rewriteEntries,
 } from "./store.js";
+import { blockReason, screen } from "./redact.js";
+import { pendingPreview, queuePending, readPending, resolvePending } from "./pending.js";
 
 const name = "tool-reflect";
 const inject = ["tools", "systemPrompt"];
 
 const SECTION_NAME = "dsh-reflect-memory";
 const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh", "reflect", "memory.md");
+const GLOBAL_PENDING = process.env.DSH_REFLECT_GLOBAL_PENDING || join(homedir(), ".dsh", "reflect", "pending.md");
 const WORKSPACE_REL = join(".dsh", "memory.md");
+const WORKSPACE_PENDING_REL = join(".dsh", "memory-pending.md");
 const INJECT_MAX_CHARS = Number(process.env.DSH_REFLECT_INJECT_MAX_CHARS || 1800);
 const MAX_ENTRIES = 500;
 
@@ -43,6 +47,18 @@ function targetFile(scope, workspaceDir) {
     throw new HarnessError("reflect: workspace scope needs workspace_dir (pass your current working directory)", "invalid_request");
   }
   return join(workspaceDir, WORKSPACE_REL);
+}
+
+/**
+ * The queue paired with a memory file. Each queue belongs to exactly one memory
+ * file, so an approval never has to guess where a candidate should land.
+ */
+function pendingFile(scope, workspaceDir) {
+  if (scope === "global") return GLOBAL_PENDING;
+  if (!workspaceDir) {
+    throw new HarnessError("reflect: workspace scope needs workspace_dir (pass your current working directory)", "invalid_request");
+  }
+  return join(workspaceDir, WORKSPACE_PENDING_REL);
 }
 
 // Harness contract (`render(args, value)` — see dsh-tool-fs): parameter ONE is
@@ -57,7 +73,8 @@ function apply(ctx) {
     description:
       "Record one durable lesson into persistent memory so future sessions can see it. " +
       "Good entries: decisions with rationale, verified commands/workarounds, pitfalls, user preferences. " +
-      "One entry per call, self-contained sentence, optional #tags. Duplicates are dropped. Never record secrets.",
+      "One entry per call, self-contained sentence, optional #tags. Duplicates are dropped. " +
+      "Every line passes a credential screen: if it looks like a key/token/blob the call refuses and you must rephrase to describe the value's shape or location instead.",
     parameters: {
       text: { type: "string", required: true, description: "The lesson, one self-contained line." },
       tags: { type: "array", items: { type: "string" }, description: "Optional tags, e.g. npm, plugin." },
@@ -67,15 +84,19 @@ function apply(ctx) {
     output: {
       schema: {
         type: "object", additionalProperties: false,
-        properties: { stored: { type: "boolean", required: true }, count: { type: "number", required: true }, file: { type: "string", required: true }, reason: { type: "string" } }
+        properties: { stored: { type: "boolean", required: true }, count: { type: "number", required: true }, file: { type: "string", required: true }, reason: { type: "string" }, truncated: { type: "boolean" } }
       },
       render
     },
     async execute(args) {
       const scope = args.scope || "workspace";
       const file = targetFile(scope, args.workspace_dir);
-      const res = recordEntry(file, args.text, args.tags || []);
-      return { file, ...res };
+      const checked = screen(args.text);
+      if (checked.hits.length) {
+        return { file, stored: false, count: readEntries(file).length, reason: blockReason(checked.hits) };
+      }
+      const res = recordEntry(file, checked.text, args.tags || []);
+      return { file, ...res, ...(checked.truncated ? { truncated: true } : {}) };
     }
   }));
 
@@ -127,7 +148,7 @@ function apply(ctx) {
     output: {
       schema: {
         type: "object", additionalProperties: false,
-        properties: { count: { type: "number", required: true }, file: { type: "string", required: true }, backup: { type: "string" } }
+        properties: { count: { type: "number", required: true }, file: { type: "string", required: true }, backup: { type: "string" }, blocked: { type: "number" } }
       },
       render
     },
@@ -136,16 +157,139 @@ function apply(ctx) {
       const file = targetFile(scope, args.workspace_dir);
       if (!Array.isArray(args.entries)) throw new HarnessError("reflect_consolidate: entries must be an array of strings", "invalid_request");
       const parsed = [];
+      let blocked = 0;
       for (const raw of args.entries.slice(0, MAX_ENTRIES)) {
         const e = parseLine(`- ${String(raw).replace(/^-\s*/, "")}`);
-        if (e) parsed.push(e);
+        if (!e) continue;
+        // A rewrite is the last chance to sanitize: drop the credential-shaped
+        // lines and keep consolidating, rather than failing the whole call.
+        const checked = screen(e.text);
+        if (checked.hits.length) {
+          blocked++;
+          continue;
+        }
+        parsed.push({ ...e, text: checked.text });
       }
       if (!parsed.length && args.entries.length) {
         throw new HarnessError("reflect_consolidate: no parseable entries", "invalid_request");
       }
-      return { file, ...rewriteEntries(file, parsed) };
+      return { file, ...rewriteEntries(file, parsed), ...(blocked ? { blocked } : {}) };
     }
   }));
+
+  // ---- the review queue: candidates never reach the prompt without approval ----
+  ctx.tools.register(defineTool({
+    name: "reflect_pending",
+    description:
+      "Review queue for durable memory. Candidates land here (not in memory.md) and are injected into NO prompt until approved. " +
+      "action=list shows the numbered queue; action=queue adds one screened candidate (use it for lessons you are not sure deserve the memory file yet, e.g. auto-distilled ones); " +
+      "action=approve / action=drop take 1-based indexes from the latest list. Never auto-approve your own candidates.",
+    parameters: {
+      action: { type: "string", enum: ["list", "queue", "approve", "drop"], required: true, description: "What to do with the queue." },
+      scope: { type: "string", enum: ["workspace", "global"], description: "Which queue/memory pair. Defaults to workspace." },
+      workspace_dir: { type: "string", description: "Absolute working directory (required for workspace scope)." },
+      text: { type: "string", description: "Candidate lesson line (action=queue)." },
+      tags: { type: "array", items: { type: "string" }, description: "Optional tags (action=queue)." },
+      source: { type: "string", description: "Provenance pointer, e.g. session-abc123@42. Keep it: it is how a bad lesson gets traced back." },
+      ids: { type: "array", items: { type: "number" }, description: "1-based indexes from the latest list (action=approve/drop)." }
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false,
+        properties: {
+          action: { type: "string", required: true }, count: { type: "number", required: true }, file: { type: "string", required: true },
+          preview: { type: "array", items: { type: "string" } },
+          moved: { type: "number" }, discarded: { type: "number" }, invalid: { type: "array", items: { type: "number" } },
+          stored: { type: "boolean" }, reason: { type: "string" }, backup: { type: "string" }
+        }
+      },
+      render
+    },
+    async execute(args) {
+      const scope = args.scope || "workspace";
+      const action = args.action;
+      const queue = pendingFile(scope, args.workspace_dir);
+      const memory = targetFile(scope, args.workspace_dir);
+      const queued = readPending(queue);
+      const previewOf = () => queued.map((e, i) => pendingPreview(e, i + 1));
+
+      if (action === "list") {
+        return { action, file: queue, count: queued.length, preview: previewOf() };
+      }
+      if (action === "queue") {
+        const checked = screen(args.text || "");
+        if (!checked.text) throw new HarnessError("reflect_pending: action=queue needs a non-empty text", "invalid_request");
+        if (checked.hits.length) {
+          return { action, file: queue, count: queued.length, stored: false, reason: blockReason(checked.hits) };
+        }
+        const res = queuePending(queue, { text: checked.text, tags: args.tags || [], source: args.source }, readEntries(memory));
+        return { action, file: queue, count: res.count, stored: res.stored, ...(res.reason ? { reason: res.reason } : {}), ...(checked.truncated ? { truncated: true } : {}) };
+      }
+      if (action === "approve" || action === "drop") {
+        const ids = Array.isArray(args.ids) ? args.ids : [];
+        if (!ids.length) throw new HarnessError(`reflect_pending: action=${action} needs ids from a prior list`, "invalid_request");
+        const res = action === "approve"
+          ? resolvePending(queue, memory, ids, [], (file, text, tags) => recordEntry(file, text, tags))
+          : resolvePending(queue, memory, [], ids, () => ({ stored: false }));
+        return {
+          action, file: queue, count: res.count,
+          moved: res.moved.length, discarded: res.discarded.length,
+          preview: [...res.moved.map((m) => `approved #${m.index} ${m.text}`), ...res.discarded.map((d) => `dropped #${d.index} ${d.text}`)],
+          ...(res.invalid.length ? { invalid: res.invalid } : {}),
+          ...(res.backup ? { backup: res.backup } : {}),
+        };
+      }
+      throw new HarnessError(`reflect_pending: unknown action ${action}`, "invalid_request");
+    }
+  }));
+
+  // Slash command over the same store: a human reviewing the queue should not
+  // need the model's cooperation. Absent `commands` (a preset without the command
+  // plane) simply means no command — the tools still work.
+  const commands = ctx.get("commands");
+  if (commands !== undefined) {
+    commands.register({
+      name: "reflect-review",
+      description: "List / approve / drop candidates in the dsh-reflect review queue.",
+      input: { hint: "[global] [approve 1,3 | drop 2 | clear]" },
+      async handler({ rawInput, agent }) {
+        const parts = String(rawInput || "").trim().split(/\s+/).filter(Boolean);
+        const scope = parts[0] === "global" || parts[0] === "workspace" ? parts.shift() : "workspace";
+        const cwd = agent?.session?.header?.cwd;
+        if (scope !== "global" && !cwd) {
+          return { kind: "error", text: "reflect-review: 该会话没有工作区，请用 `/reflect-review global …`" };
+        }
+        const queue = pendingFile(scope, cwd);
+        const memory = targetFile(scope, cwd);
+        const verb = (parts[0] || "list").toLowerCase();
+        const indexes = (parts[1] || "").split(/[,，\s]+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+        const queued = readPending(queue);
+        if (verb === "list") {
+          const preview = queued.map((e, i) => pendingPreview(e, i + 1)).join("\n");
+          return { kind: "success", text: `候选队列（${scope} · ${queue}）现有 ${queued.length} 条：\n${preview || "（空）"}\n\n用 \`/reflect-review${scope === "global" ? " global" : ""} approve 1,2\` 批准入库，\`drop 3\` 丢弃。` };
+        }
+        if (verb === "clear") {
+          if (!queued.length) return { kind: "success", text: "队列已经是空的。" };
+          const res = resolvePending(queue, memory, [], queued.map((_e, i) => i + 1), () => ({ stored: false }));
+          return { kind: "success", text: `已丢弃 ${res.discarded.length} 条候选（备份：${res.backup || "无"}）。` };
+        }
+        if (verb !== "approve" && verb !== "accept" && verb !== "drop") {
+          return { kind: "error", text: "用法：/reflect-review [global] [list | approve 1,2 | drop 3 | clear]" };
+        }
+        if (!indexes.length) return { kind: "error", text: "要给序号，例如 approve 1,3" };
+        const accept = verb === "drop" ? [] : indexes;
+        const drop = verb === "drop" ? indexes : [];
+        const res = resolvePending(queue, memory, accept, drop, (file, text, tags) => recordEntry(file, text, tags));
+        const lines = [
+          ...res.moved.map((m) => `✓ 入库 #${m.index}：${m.text}`),
+          ...res.discarded.map((d) => `✗ 丢弃 #${d.index}：${d.text}`),
+        ];
+        if (res.invalid.length) lines.push(`序号不存在：${res.invalid.join(", ")}`);
+        lines.push(`剩余候选 ${res.count} 条${res.backup ? `（旧队列备份 ${res.backup}）` : ""}`);
+        return { kind: "success", text: lines.join("\n") };
+      },
+    });
+  }
 
   // Injection: every prompt assembly gets the global list + the usage rules.
   ctx.on("system-prompt/assemble", async (assembly, _context, next) => {

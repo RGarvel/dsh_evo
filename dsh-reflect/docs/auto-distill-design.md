@@ -97,7 +97,7 @@ ctx.systemPrompt.section({
 ## 4. 切分（每步单独可验，按依赖排序）
 
 1. **探针**（§3 已由源码定案，剩下两件事）：`{global:true}` 的 `session/event` 能否收到所有会话的 `turn/end`；`searchEvents` 在本机是否真有全文（`~/.dsh` 下没搜到 sqlite 文件）。产出：结论写进本文件；
-2. **pending + redaction + `/reflect-review` 命令**（先完全不自动）——安全性先立起来，且这步不需要额外重启；
+2. ✅ **pending + redaction + `/reflect-review`**（已落地 `0.0.1-spike.3`：`lib/redact.js` + `lib/pending.js` + 第 4 工具 `reflect_pending` + `ctx.get('commands')` 上的 `/reflect-review`）——队列与记忆**一对一配对**（全局队列→全局记忆，工作区→工作区），`record/consolidate/queue` 三条写路径全过凭据闸，拒绝时不回显命中内容，序号漂移只报不猜；安全性先立起来；
 3. 触发器 A + 选材 + `llm.stream` 提炼 → 只写 pending，`settings` 默认关闭；
 4. 注入面迁到 `systemPrompt.section()` + 工作区层 + token 预算（`tokenMeter`）+ `new/merge/drop` 合入逻辑；
 5. 每日兜底 B + 跨重启游标（`storage`）。

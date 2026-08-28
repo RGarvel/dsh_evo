@@ -222,22 +222,39 @@ export async function tryDistill(ctx, event, session) {
     }
     dbg(`streaming: provider=${provider} model=${model} timeoutSignal=${signal ? "on" : "unavailable"}`);
     let response = "";
+    // Diagnostic: what does the stream ACTUALLY yield for this model? Chunk-type
+    // tallies + a sample from each delta kind, so one observation is conclusive.
+    const typeCounts = {};
+    const samples = {};
+    let finishReason = null;
     try {
       for await (const chunk of llm.stream({
         provider,
         model,
         messages,
-        maxTokens: 500,
+        maxTokens: 2000,
         sessionId,
         signal,
       })) {
-        if (chunk.type === "text-delta" && chunk.text) response += chunk.text;
+        const t = chunk?.type ?? "?";
+        typeCounts[t] = (typeCounts[t] ?? 0) + 1;
+        if (t === "text-delta" && chunk.text) {
+          response += chunk.text;
+          if (!samples["text-delta"]) samples["text-delta"] = chunk.text.slice(0, 60);
+        } else if (t === "reasoning-delta" && chunk.text) {
+          if (!samples["reasoning-delta"]) samples["reasoning-delta"] = chunk.text.slice(0, 60);
+        } else if (t === "finish") {
+          finishReason = chunk.reason;
+        } else if (t === "block-start" && !samples["block-start"]) {
+          samples["block-start"] = `blockType=${chunk.blockType}`;
+        }
       }
     } catch (e) {
       dbg(`bail: LLM stream failed (${e?.name}: ${e?.message})`);
       ctx.logger?.warn?.(`dsh-reflect distill: LLM call failed (${e.message})`);
       return;
     }
+    dbg(`chunk types=${JSON.stringify(typeCounts)} finish=${typeof finishReason === "object" ? JSON.stringify(finishReason) : finishReason} samples=${JSON.stringify(samples)}`);
     dbg(`streamed response chars=${response.length} head=${JSON.stringify(response.slice(0, 80))}`);
 
     // Parse output and queue candidates.

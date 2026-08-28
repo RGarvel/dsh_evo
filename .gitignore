@@ -1,0 +1,3 @@
+# 工作区记忆本体随项目进 git（团队共享），但 consolidate 的自动备份只留本地
+.dsh/memory.md.bak-*
+node_modules/

@@ -1,7 +1,7 @@
 {
   "name": "@garvel/dsh-reflect",
-  "version": "0.0.1-spike.3",
-  "description": "File-level self-learning prototype for DeepSeek Harness: a persistent memory store (per-workspace + global markdown), a credential screen, a human-gated review queue (tool + /reflect-review), model-driven consolidation tools, and a system-prompt injection seam.",
+  "version": "0.0.1-spike.4",
+  "description": "File-level self-learning prototype for DeepSeek Harness: a persistent memory store (per-workspace + global markdown), a credential screen, a human-gated review queue (tool + /reflect-review), model-driven consolidation tools, and a per-session system-prompt injection seam.",
   "keywords": [
     "cordis",
     "cordis-plugin",

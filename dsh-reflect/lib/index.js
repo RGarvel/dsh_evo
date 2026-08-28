@@ -37,7 +37,10 @@ const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh
 const GLOBAL_PENDING = process.env.DSH_REFLECT_GLOBAL_PENDING || join(homedir(), ".dsh", "reflect", "pending.md");
 const WORKSPACE_REL = join(".dsh", "memory.md");
 const WORKSPACE_PENDING_REL = join(".dsh", "memory-pending.md");
-const INJECT_MAX_CHARS = Number(process.env.DSH_REFLECT_INJECT_MAX_CHARS || 1800);
+// Budget in tokens at the harness's own 4 chars/token density (see store.js).
+const INJECT_MAX_TOKENS = Number(process.env.DSH_REFLECT_INJECT_MAX_TOKENS || 600);
+// Legacy direct override in characters; when set it wins over the token budget.
+const INJECT_MAX_CHARS = Number(process.env.DSH_REFLECT_INJECT_MAX_CHARS || 0);
 const MAX_ENTRIES = 500;
 
 /** Resolve which file a scoped call operates on. */
@@ -291,18 +294,44 @@ function apply(ctx) {
     });
   }
 
-  // Injection: every prompt assembly gets the global list + the usage rules.
-  ctx.on("system-prompt/assemble", async (assembly, _context, next) => {
-    try {
-      if (!assembly.sections.some((s) => s.name === SECTION_NAME)) {
-        const text = renderInjection(readEntries(GLOBAL_FILE), [], { maxChars: INJECT_MAX_CHARS });
-        if (text) assembly.sections.push({ name: SECTION_NAME, order: 950, text });
+  // ---- injection ----
+  // A `section()` provider, not a `system-prompt/assemble` listener: the registry
+  // owns disposal and rejects a duplicate name outright (no hand-rolled idempotency
+  // check), and — decisively — the provider receives the assembly context, whose
+  // runtime shape is `{agent, scope: agent}` (`assembleContextFor()` in dsh-agent)
+  // even though `AssembleContext` only declares `{scope?, signal?}`. That is where
+  // `agent.session.header.cwd` comes from, and it is what makes the WORKSPACE layer
+  // injectable at all. Because `agent` is an undeclared runtime fact, every access
+  // is optional and its absence degrades to the global-only v0 behavior — loudly,
+  // once, rather than silently dropping a layer someone assumed was live.
+  const shapeWarned = { done: false };
+  ctx.systemPrompt.section({
+    name: SECTION_NAME,
+    order: 950,
+    text: (context) => {
+      try {
+        const agent = context?.agent;
+        if (agent === void 0 && !shapeWarned.done) {
+          shapeWarned.done = true;
+          ctx.logger?.warn?.("dsh-reflect: the assemble context carried no `agent`; workspace memory will not be injected (harness shape changed?)");
+        }
+        const cwd = agent?.session?.header?.cwd;
+        const workspaceEntries = cwd ? readEntries(join(cwd, WORKSPACE_REL)) : [];
+        // Count both queues a session could be waiting on; contents never render here.
+        const pendingCount =
+          readPending(GLOBAL_PENDING).length +
+          (cwd ? readPending(join(cwd, WORKSPACE_PENDING_REL)).length : 0);
+        return renderInjection(readEntries(GLOBAL_FILE), workspaceEntries, {
+          maxTokens: INJECT_MAX_TOKENS,
+          maxChars: INJECT_MAX_CHARS,
+          pendingCount,
+        });
+      } catch {
+        // Memory is an enhancement; it must never break a model request.
+        return "";
       }
-    } catch {
-      /* memory must never break prompt assembly */
-    }
-    return await next();
-  }, { global: true });
+    },
+  });
 }
 
 export { apply, inject, name };

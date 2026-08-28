@@ -38,16 +38,17 @@
    - 事件目录里**没有** session-end 类事件；可用触发面是 `session/event`（折 `turn/end{completed}`）、`agent/turn-stopping`、`agent/disposed`、`agent/status`；
    - **工作区级注入已定案可做**（见上面那条 ❌→✅）：`context.agent.session.header.cwd`，且更好的形态是 `systemPrompt.section()` 而非瀑布监听；
    - 安全底线：候选只进 `pending.md`，`userQuestions.ask()` 做复核门，redaction 在进 pending 之前，总开关放 `settings` 注册 `reflect` 命名空间。
-3. 注入预算 token 化（**零件已确认在**：`tokenMeter` 服务已挂载，有 `estimateMessage`）、语义判重（把现有条目喂给提炼步骤输出 `new/merge/drop`，本机无 embedding 零件）、与 skills 打通（`skills.register` 可挂 provider）；
+3. ✅ **注入预算 token 化已做**（结论比预想的简单：harness 给系统提示定价就是 `ceil(len/4)+4`，所以"token 化"=用同一除数，别去调 `tokenMeter.estimateMessage`——它面向会话消息）。剩：语义判重（把现有条目喂给提炼步骤输出 `new/merge/drop`，本机无 embedding 零件）、与 skills 打通（`skills.register` 可挂 provider）；
 4. 上游联动，现在有两个候选，**第二个比 #4879 值钱**：
    - #4879：论据要改写——不再是"请透出 cwd"，而是"`AssembleContext` 的 .d.ts 漏声明了运行时一直存在的 `agent` 字段（`assembleContextFor()` 返回 `{agent, scope:agent}`），请补齐"。优先级降；
    - **新报告（建议优先）**：rev 29b22c5 上"参数根 schema 只有 `oneOf`／无可解析 `type` → 值被当字符串送达"，两条独立复现（`cordis_define.plugin` 恒 matched 0、MCP `sec_filing_read.filing`），控制组是显式 `type:"object"`。这条堵死了动态 Cordis 插件的全部入口，比 cwd 严重。
-5. 发版决策：@garvel/dsh-reflect 首发用 --tag spike；发布必须你终端跑（EOTP 网页认证）。当前版本 `0.0.1-spike.3`，`files` 已含 `lib`/`docs`/`cordis.patch.yml`/`README`/`LICENSE`，`dsh.bundle` 声明也已就位——发出去的包可直接 `dsh plugin add @garvel/dsh-reflect`。
+5. 发版决策：@garvel/dsh-reflect 首发用 --tag spike；发布必须你终端跑（EOTP 网页认证）。当前版本 `0.0.1-spike.4`，`files` 已含 `lib`/`docs`/`cordis.patch.yml`/`README`/`LICENSE`，`dsh.bundle` 声明也已就位——发出去的包可直接 `dsh plugin add @garvel/dsh-reflect`。
 6. **实现进度（按设计文档 §4 切分）**：
    - 第 1 步探针：`scope→cwd` 那问已由源码定案（见 ❌→✅ 条），**剩两件没验**：`{global:true}` 的 `session/event` 能否收到所有会话的 `turn/end`；`searchEvents` 本机是否真有全文（`~/.dsh` 下搜不到 sqlite 文件）；
    - **第 2 步 ✅ 已落地**（2026-08-28 晚，`0.0.1-spike.3`，56/56 测试）：`lib/redact.js` 凭据筛查（record/consolidate/queue 三条写路径全过闸，拒绝时不回显命中内容，小写 hex git sha 与正常中文不误伤）+ `lib/pending.js` 复核队列（`- text @src:session-x@n #tag` 格式、与配对 memory 文件去重、approve 才入 `memory.md`、每次重写自动 `.bak-` 留痕、序号漂移只报不猜）+ 第 4 个工具 `reflect_pending`（list/queue/approve/drop）+ 人用命令 `/reflect-review [global] [list|approve 1,2|drop 3|clear]`（`ctx.get('commands')` 可选依赖，工作区取 `agent.session.header.cwd`）；
-   - **仍不自动**：没有任何生产者往队列里写东西，队列现在是空的；
-   - 第 3 步起需要一次重启（新工具/命令只在进程启动时求值）。
+   - **第 4 步 ✅ 已落地**（同日，`0.0.1-spike.4`，61/61 测试）：注入换成 `ctx.systemPrompt.section({name, order:950, text:(context)=>…})`（源码核对：`PromptSection.order` 必填、`text` 可传 provider、`section()` 自带 disposer、重名直接 throw）；工作区层随 `context.agent?.session?.header?.cwd` 一起注入；预算改 token 口径，但**除数直接取 harness 自己的 `estimateSystemTokens` = `ceil(len/4)+4`**——`dsh-token-meter` 只导出 `TokenMeter` 类，`estimateMessage` 面向会话消息（role framing + 每块 `+4`），拿伪造 Message 去调只会让预算与循环实际计费不一致，所以 4 chars/token 就是契约（`CHARS_PER_TOKEN` 在 store.js）；超限**整行**从尾部丢并声明"还有 N 条未注入"；缺 `agent` 时 `logger.warn` 一次不静默；队列只报条数、内容绝不进提示词（I2 守着）；env 增至四个（`DSH_REFLECT_INJECT_MAX_TOKENS` 默认 600，`_INJECT_MAX_CHARS` 保留为直接覆盖且优先级更高）；
+   - **仍不自动**：没有生产者往队列里写东西；全局队列现有一条探针（`commands.register()`/`section()` 自管 dispose 那条），等你 `/reflect-review global approve 1`；
+   - **实机已验**：第 2 步三项（queue 落盘带 `@src`、`AKIAIOSFODNN7EXAMPLE` 被 `access-key-shape` 拦下且记忆计数不变、list 正常）+ `reflect_consolidate` 顺带纠掉工作区一条被证伪的旧教训；**第 4 步还欠一次重启**才能看到 `Workspace lessons` 分组真出现在提示词里。
 
 ## 环境常量
 

@@ -63,14 +63,19 @@ check("D3 truncation marker", tiny.length <= 210 && tiny.includes("reflect_recal
 const registered = [];
 const listeners = [];
 const commandDefs = [];
+const sections = [];
+const warnings = [];
 const ctx = {
   tools: { register: (d) => registered.push(d) },
   on: (ev, fn, opts) => listeners.push({ ev, fn, opts }),
+  systemPrompt: { section: (s) => sections.push(s) },
+  logger: { warn: (m) => warnings.push(m) },
   get: (key) => (key === "commands" ? { register: (d) => { commandDefs.push(d); return () => {}; } } : undefined),
 };
 apply(ctx);
 check("E1 four tools registered", ["reflect_record", "reflect_recall", "reflect_consolidate", "reflect_pending"].every((n) => registered.find((t) => t.name === n)));
-check("E2 assemble listener global+guarded", listeners.length === 1 && listeners[0].ev === "system-prompt/assemble" && listeners[0].opts?.global === true);
+check("E2 injection is a section, not a waterfall listener", sections.length === 1 && listeners.length === 0
+  && sections[0].name === "dsh-reflect-memory" && sections[0].order === 950 && typeof sections[0].text === "function");
 
 const rec = registered.find((t) => t.name === "reflect_record");
 const recRes = await rec.execute({ text: "工具注册走 ctx.tools.register", tags: ["dsh"], workspace_dir: ws });
@@ -90,18 +95,17 @@ check("E7 recall all scopes", all.global.count === 1 && all.workspace.count === 
 const gOnly = await recall.execute({ scope: "global" });
 check("E8 recall global only", gOnly.global.count === 1 && gOnly.workspace.skipped === true);
 
-const asm = { sections: [{ name: "identity", order: -100, text: "base" }], contexts: [], tools: [], variables: {} };
-await listeners[0].fn(asm, {}, async () => asm);
-const sec = asm.sections.find((s) => s.name === "dsh-reflect-memory");
-check("E9 injection section appended", !!sec && sec.text.includes("全局教训：先看源码再下结论"));
-check("E10 section text is plain string", typeof sec.text === "string");
-await listeners[0].fn(asm, {}, async () => asm);
-check("E11 idempotent on same assembly", asm.sections.filter((s) => s.name === "dsh-reflect-memory").length === 1);
-
-// broken store must not break assembly
-const bad = { sections: null };
-await listeners[0].fn(bad, {}, async () => ({ survived: true }));
-check("E12 listener never throws on odd assembly", true);
+const section = sections[0];
+const cwdCtx = { agent: { session: { header: { cwd: ws } } } };
+const globalOnly = section.text({});
+const withWs = section.text(cwdCtx);
+check("E9 section renders global lessons", globalOnly.includes("## Persistent Memory (dsh-reflect)") && globalOnly.includes("全局教训：先看源码再下结论"));
+check("E10 workspace layer renders only with a session cwd", withWs.includes("Workspace lessons") && withWs.includes("纯文本条目") && !globalOnly.includes("纯文本条目"));
+check("E11 provider is pure across repeated assemblies", section.text(cwdCtx) === withWs);
+check("E12 provider never throws on shapeless or hostile contexts", typeof section.text(undefined) === "string"
+  && typeof section.text({ agent: {} }) === "string"
+  && typeof section.text({ get agent() { throw new Error("shape changed"); } }) === "string");
+check("E12b a missing agent warns once instead of silently dropping the layer", warnings.length === 1 && /no `agent`/.test(warnings[0]));
 
 // ---- render arity (regression) ----
 // The harness calls output.render(args, value): parameter ONE is the call's
@@ -165,6 +169,15 @@ const listed = await cmd.handler({ rawInput: "global list", agent: agentHere, co
 check("H5 global scope skips the cwd requirement", listed.kind === "success" && /现有 0 条/.test(listed.text));
 const noWs = await cmd.handler({ rawInput: "approve 1", agent: {}, commandId: "c3", attachments: [], signal: undefined });
 check("H6 command without a cwd errors instead of guessing", noWs.kind === "error" && /global/.test(noWs.text));
+
+// ---- I. the gate's whole point, checked on the render path ----
+await pend.execute({ action: "queue", scope: "workspace", workspace_dir: ws, text: "待复核的候选教训Z", source: "session-zz@1" });
+const withPending = section.text(cwdCtx);
+check("I1 queue depth is hinted", /\d+ 条候选在复核队列里/.test(withPending));
+check("I2 queue CONTENT never reaches the prompt", !withPending.includes("待复核的候选教训Z"));
+check("I3 approved content does reach it", withPending.includes("命令面复核的候选"));
+const tight = store.renderInjection([{ text: "AAA".repeat(26) }, { text: "BBB".repeat(26) }, { text: "CCC".repeat(26) }], [], { maxTokens: 40 });
+check("I4 token budget drops whole rows and declares how many", tight.length <= 160 && tight.includes("条未注入") && !tight.includes("CCC"));
 
 console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
 process.exit(failures ? 1 : 0);

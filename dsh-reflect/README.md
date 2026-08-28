@@ -14,7 +14,7 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 | `reflect_pending` | **复核队列**：`list` / `queue` / `approve` / `drop`。候选先进队列，**不参与任何 prompt 组装**，只有被批准后才落入 `memory.md`。每条带 `@src:session-<id>@<seq>` 溯源指针 |
 | `/reflect-review` | 同一队列的人用出口（不经模型）：`/reflect-review [global] [list \| approve 1,2 \| drop 3 \| clear]`。工作区路径取自会话 `header.cwd` |
 | 凭据筛查 `lib/redact.js` | 写盘前的硬闸：`password: …` 式赋值、`Bearer …`、PEM 头、URL 里的 `?token=`、云 AK 形状、以及"≥24 字符且同时含数字与大写/符号"的高熵串。刻意**不**误伤小写十六进制 git sha，也不管中文里正常提到"密钥/token"；拒绝时绝不回显命中内容，长度上限 400 字符（超出截断并报 `truncated`） |
-| 注入 seam | 监听 `system-prompt/assemble` 瀑布，把全局记忆 + 使用规约追加为 section（order 950），每轮组装实时读盘，超长截断并指路 recall。listener 全程 try/catch——记忆坏掉也不能弄崩 prompt。**注**：更好的写法是 `ctx.systemPrompt.section({name, order, text: (context) => …})`——provider 能拿到 `context.agent.session.header.cwd`，工作区层因此可做（见 `docs/auto-distill-design.md` §3），迁移在路线图第 3 条 |
+| 注入 seam | `ctx.systemPrompt.section({name, order: 950, text: (context) => …})`——**provider 形态，每轮组装实时读盘**。拿 `context.agent.session.header.cwd` 定位工作区，所以**全局层 + 工作区层一起注入**；dispose 由 registry 管，重名直接 throw（不再手写幂等判断，也不用 `{global:true}` 那个技巧）。预算按 token 计（`maxTokens`，默认 600 → 与 harness 自己的 `ceil(len/4)` 同除数），超限**整行从尾部丢**并写明"还有 N 条未注入"，绝不静默截半句。provider 全程 try/catch：记忆坏掉、`agent` 字段被上游收走，都不能弄崩模型请求；退化时 `logger.warn` **一次**，不静默 |
 
 存储约定：
 
@@ -26,9 +26,10 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 
 - **不自动触发**：沉淀/整理由模型按注入规约主动调用（或你一句"把今天的坑记下来"）。**复核队列已经就位但没有生产者**——自动蒸馏是下一步（见路线图 1），届时候选只会进 `pending.md`，不会直写 `memory.md`；
 - **不读会话历史**：v0 不做"会话结束自动回看 transcript 蒸馏"。零件其实齐了——`sessionQuery` 服务（`listSessions`/`filterEvents`/`searchEvents`）+ `llm.stream` 单发提炼 + `ctx.timer` 静默去抖，缺的是策略与安全门，见 `docs/auto-distill-design.md`；
-- **workspace 层只写不注入**：注入 section 目前只嵌**全局**条目。原因**不是** harness 缺口（早先记的"`AssembleContext` 拿不到 cwd"是只读 `.d.ts` 的错判——运行时 `assembleContextFor()` 一直把 `agent` 塞在 context 里，`scope === agent`，官方 plan-mode 就在用），只是 v0 没迁到 `section()` provider 写法。迁移后即修；
+- ~~workspace 层只写不注入~~ **已修**：注入改为 per-session provider，工作区层跟着 `header.cwd` 进提示词。留这条是为了记成因——早先那句"`AssembleContext` 拿不到 cwd"是**只读 `.d.ts` 的错判**：运行时 `assembleContextFor()` 一直把 `agent` 塞在 context 里（`scope === agent`），官方 plan-mode 就在用。**`.d.ts` 不是契约，看调用点**；
+- **不自称精确 token 计数**：预算除数直接取 harness 自己的 `estimateSystemTokens`（`ceil(len/4) + 4`），没有 embedding、没有 tiktoken。曾打算调 `tokenMeter.estimateMessage()`，读完源码放弃——那是面向**会话消息**的（要 role framing、`+4` per block），拿伪造 Message 喂它只会让预算和循环实际计费不一致；
 - 去重是精确归一化匹配，不做语义判重（语义判重=consolidate 的活）；
-- 无 config 面（常量 + 三个 env），spike 阶段够用。**注意**：一旦上自动回路，`settings` 注册 `reflect` 命名空间做总开关是硬要求（详见设计文档 §1.4）。
+- 无 config 面（常量 + 四个 env：`DSH_REFLECT_GLOBAL_FILE` / `_GLOBAL_PENDING` / `_INJECT_MAX_TOKENS` / 直接覆盖用的 `_INJECT_MAX_CHARS`），spike 阶段够用。**注意**：一旦上自动回路，`settings` 注册 `reflect` 命名空间做总开关是硬要求（详见设计文档 §1.4）。
 
 ## 测试
 
@@ -36,7 +37,9 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 npm test
 ```
 
-56 项断言：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→assemble 注入幂等/异常免疫）+ **render 元数回归**（E13/E14）+ **凭据筛查**（F1-F10，含"git sha 与正常中文不许误伤"和"拒绝时不许回显"两条反例）+ **队列**（G1-G7：溯源、配对去重、批准迁移、备份留痕、序号漂移只报不猜）+ **工具与 `/reflect-review` 共用同一存储**（H1-H6）。
+61 项断言：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→注入 section）+ **render 元数回归**（E13/E14）+ **凭据筛查**（F1-F10，含"git sha 与正常中文不许误伤""拒绝时不许回显"两条反例）+ **队列**（G1-G7：溯源、配对去重、批准迁移、备份留痕、序号漂移只报不猜）+ **工具与 `/reflect-review` 共用同一存储**（H1-H6）+ **注入面**（E9-E12b：工作区层只在有 cwd 时出现、provider 对畸形/敌意 context 不抛、缺 `agent` 只 warn 一次；I1-I4：队列只报条数不报内容、token 预算整行裁剪）。
+
+> 本机 `npm test` 会被执行策略拦（`npm.ps1 cannot be loaded`），直接 `node test/reflect.test.mjs`。
 
 > 坑（实机才暴露）：harness 的 `output.render(args, value)` **第一参是入参、返回值在第二位**。早期写成 `render = (value) => JSON.stringify(value)`，工具于是把**模型自己的入参**当成结果回显——写盘照常成功、测试全绿，只有真会话能看出来。签名对照见官方 `dsh-tool-fs` 的 `render: (_args, value) => …`。
 
@@ -58,9 +61,9 @@ dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect   # 或 npm 发布后 @
 
 **详细设计已成稿**：[`docs/auto-distill-design.md`](docs/auto-distill-design.md)（触发/选材/提炼/复核四环节，附零件清单与实测过的服务面）。骨架：
 
-1. **自动蒸馏**：`session/event` 折 `turn/end{completed}` + `ctx.timer` 静默去抖（**不是** `dsh-schedule`——它是会话内提醒器，不启动 agent turn）→ `sessionQuery` 选候选会话 → `llm.stream` 单发提炼 → 候选进 `pending.md`；
-2. **复核门 + redaction**：`userQuestions.ask()` 逐条批准，敏感模式在进 pending 前过滤，总开关进 `settings`；
-3. **注入面迁移**：`system-prompt/assemble` 监听 → `systemPrompt.section()` provider，顺带打通**工作区层注入**（`context.agent.session.header.cwd`，见"刻意不是什么"第 3 条）+ 用 `tokenMeter` 做预算；
+1. **自动蒸馏**（下一步，也是唯一还没有生产者的环节）：`session/event` 折 `turn/end{completed}` + `ctx.timer` 静默去抖（**不是** `dsh-schedule`——它是会话内提醒器，不启动 agent turn）→ `sessionQuery` 选候选会话 → `llm.stream` 单发提炼 → 候选进 `pending.md`。开工前还欠两个探针：`{global:true}` 的监听能否收到**所有**会话的 `turn/end`；`searchEvents` 本机是否真有全文（`~/.dsh` 下搜不到 sqlite 文件）；
+2. **复核门**：队列 + `/reflect-review` + 凭据筛查已就位（第 4 个工具那节）。剩两件锦上添花：`userQuestions.ask()` 把批准变成一次点击式提问，`settings` 注册 `reflect` 命名空间做总开关；
+3. ✅ **注入面迁移**（已完成）：`assemble` 监听 → `systemPrompt.section()` provider，工作区层注入随之打通；预算改 token 口径（harness 同除数）；
 4. compaction 搭车（`compaction/summary` 事件是白捡的输入）、语义判重（`new/merge/drop` 三态交给提炼步骤）、高频教训→SKILL.md 草稿（`skills.register`）。
 
 ## 渊源

@@ -1,5 +1,5 @@
 # dsh-reflect memory
 <!-- managed by @garvel/dsh-reflect; one lesson per '- ' line, trailing #tags optional; never store secrets -->
-- dsh_evo 工作区记忆文件首条：本工作区承载 dsh-reflect spike，进展看 D:\dsh_evo\HANDOFF-NOTES.md #workspace
-- reflect_recall 的返回只含 {scope,workspace_dir}、不回条目正文，判断某作用域是否为空必须直接读文件：global 在 ~/.dsh/reflect/memory.md，workspace 在 <workspace>/.dsh/memory.md（不是 .dsh/reflect/） #dsh-reflect #pitfall
-- reflect_consolidate 是整文件重写，剔除单条前先读盘、把要保留的旧条目原文一并传回 #dsh-reflect
+- dsh_evo 工作区承载 dsh-reflect spike，进展与待办看 D:\dsh_evo\HANDOFF-NOTES.md #workspace
+- 记忆文件实际路径：global 在 ~/.dsh/reflect/memory.md（队列 pending.md），workspace 在 <workspace>/.dsh/memory.md（队列 memory-pending.md）——不是 .dsh/reflect/ 子目录 #dsh-reflect #paths
+- 早先那条「reflect_recall 只回 {scope,workspace_dir} 不回正文」是 render(args,value) 元数 bug 的症状，spike.2 已修，工具现在正常返回条目正文；遇到工具结果等于入参本身，先怀疑 render 而不是存储 #dsh-reflect #fixed

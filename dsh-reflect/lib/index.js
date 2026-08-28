@@ -33,7 +33,9 @@ import { pendingPreview, queuePending, readPending, resolvePending } from "./pen
 import { tryDistill } from "./distill.js";
 
 const name = "tool-reflect";
-const inject = ["tools", "systemPrompt"];
+// `llm` is required so the auto-distill loop can call ctx.llm.stream(); it is a
+// core service always present, so declaring it never leaves the plugin waiting.
+const inject = ["tools", "systemPrompt", "llm"];
 
 const SECTION_NAME = "dsh-reflect-memory";
 const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh", "reflect", "memory.md");

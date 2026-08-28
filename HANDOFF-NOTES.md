@@ -56,6 +56,7 @@
    - **env 配置方式**（spike.9 踩坑）：`DSH_REFLECT_AUTO_DISTILL=on` 不能放 `~/.dsh/.env`（dsh-app-boot 的 `isBootstrapOnly` 把 `DSH_` 前缀全拦了），必须通过 sysdm.cpl 用户变量设置；修改后需**注销重登录**（不只是重启进程）才能让新 dsh web 进程继承。
    - **turn/end 字段名 bug**（spike.10 修）：`SessionEventMap['turn/end']` 的字段是 `reason`（`'completed'|'aborted'|...'TurnEndReason`），不是 `kind`。distill.js 和 index.js 两处 `event?.kind` 全改成 `event?.reason`。events.jsonl 探针里 `kind` 字段也因此永远为空，后续改用 `reason`。
    - **turn/end reason 嵌套结构 bug**（spike.11 修）：`reason` 字段不是字符串 `"completed"`，而是嵌套对象 `{kind: "completed"}`（见 `TurnEndReasonMap`）。distill.js 和 index.js 两处 `event.reason !== "completed"` 全改成 `event.reason?.kind !== "completed"`。
+   - **SessionEvent 包装层 bug**（spike.12 修）：`session/event` 监听器收到的 `event` 是 `SessionEvent` 包装对象（`{ type, data, seq, sourceEventSeqs }`），payload 在 `event.data` 里。`reason` 是 `event.data.reason` 不是 `event.reason`。三处修正：index.js 触发条件 + index.js 探针 + distill.js selectCandidate。
 
 ## 环境常量
 

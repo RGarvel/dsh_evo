@@ -23,11 +23,16 @@
 
 ## 待办（新会话的讨论清单）
 
-1. **实机装载**：profile `dsh plugin add file:D:/dsh_evo/dsh-reflect`（或 npm 发布后 @garvel/dsh-reflect）→ 重启 web → 真会话里 `reflect_record` 一条、下轮看注入 section 是否出现（终端 `curl` 法看 prompt 快照，或直接问模型"你能看到 Persistent Memory 吗"）；
+1. **实机装载**（2026-08-28 本会话已完成装载侧，剩重启+验证）：
+   - ✅ `dsh-reflect/package.json` 补了 `dsh.bundle.patch: ./cordis.patch.yml` 声明——**没有它 `dsh plugin add` 只当普通依赖装，不进 bundle 层栈**（CLI 有 warning，源码 `dsh/lib/plugin-*.js` reconcile 逻辑）；
+   - ✅ `dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect` 已跑，profile package.json bundles 末尾已出现 `@garvel/dsh-reflect`；
+   - ⚠ profile 侧是**实体拷贝**（pnpm file: 行为）：改 dsh_evo 源码后 `plugin add` 报 "Already up to date" 不重拷，需手动同步 `~/.dsh/profiles/web/node_modules/@garvel/dsh-reflect/` 下的副本（本次只同步过 package.json）；
+   - ✅ 全局记忆已播种 2 条（`~/.dsh/reflect/memory.md`，含本次装载经验本身）；模块从 profile 路径烟雾 import 通过；
+   - ❇ **剩余**：终端 `dsh`（即重启 web 进程，无 restart 子命令，杀进程重开）→ 新会话问"你能看到 Persistent Memory 吗"或直接调 `reflect_record`/`reflect_recall` 验证注入面+工具面；
 2. 自动蒸馏回路设计：`dsh-schedule` 定时 vs 会话结束事件；用 `dsh-session-query-sqlite` 挖近期会话让子代理提炼候选教训（要人工复核开关 + 敏感词 redaction）；
 3. 注入预算 token 化、语义判重、与 skills 打通（高频教训→SKILL.md 草稿）；
 4. 上游联动：把"memory-injection 需要的 scope→workspace 映射"作为追加论据评论进 #4879（如果它还没凉）；
-5. 发版决策：@garvel/dsh-reflect 首发用 --tag spike；发布必须你终端跑（EOTP 网页认证）。
+5. 发版决策：@garvel/dsh-reflect 首发用 --tag spike；发布必须你终端跑（EOTP 网页认证）。注意 npm 发布物 `files` 已含 cordis.patch.yml，`dsh.bundle` 声明也已就位——发出去的包可直接 `dsh plugin add @garvel/dsh-reflect`。
 
 ## 环境常量
 

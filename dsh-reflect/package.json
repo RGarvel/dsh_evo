@@ -46,5 +46,10 @@
   "cordisPlugin": {
     "name": "@garvel/dsh-reflect",
     "require": "@deepseek-ai/dsh-base"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

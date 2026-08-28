@@ -55,6 +55,7 @@
    - **部署纪律**（本轮踩到）：部署副本 `index.js` 与源码差 51 行而 `store.js` 差 0 行（spike.4 一次只同步了一个文件），导致队列提示出现了但工作区没有——**核对固化**：`Compare-Object` 逐文件比所有 `lib/*.js`，且版本号与部署字节一一对应。
    - **env 配置方式**（spike.9 踩坑）：`DSH_REFLECT_AUTO_DISTILL=on` 不能放 `~/.dsh/.env`（dsh-app-boot 的 `isBootstrapOnly` 把 `DSH_` 前缀全拦了），必须通过 sysdm.cpl 用户变量设置；修改后需**注销重登录**（不只是重启进程）才能让新 dsh web 进程继承。
    - **turn/end 字段名 bug**（spike.10 修）：`SessionEventMap['turn/end']` 的字段是 `reason`（`'completed'|'aborted'|...'TurnEndReason`），不是 `kind`。distill.js 和 index.js 两处 `event?.kind` 全改成 `event?.reason`。events.jsonl 探针里 `kind` 字段也因此永远为空，后续改用 `reason`。
+   - **turn/end reason 嵌套结构 bug**（spike.11 修）：`reason` 字段不是字符串 `"completed"`，而是嵌套对象 `{kind: "completed"}`（见 `TurnEndReasonMap`）。distill.js 和 index.js 两处 `event.reason !== "completed"` 全改成 `event.reason?.kind !== "completed"`。
 
 ## 环境常量
 

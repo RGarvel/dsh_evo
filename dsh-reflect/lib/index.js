@@ -30,6 +30,7 @@ import {
 } from "./store.js";
 import { blockReason, screen } from "./redact.js";
 import { pendingPreview, queuePending, readPending, resolvePending } from "./pending.js";
+import { tryDistill } from "./distill.js";
 
 const name = "tool-reflect";
 const inject = ["tools", "systemPrompt"];
@@ -366,11 +367,14 @@ function apply(ctx) {
     });
   }
 
-  // ---- spike probe: {global:true} session/event listener ----
-  // Logs every event to EVENT_LOG so we can answer "does this listener see ALL
-  // sessions' events, or only the current one?" by reading the file after a restart.
-  if (EVENT_LOG) {
-    ctx.on("session/event", (subject, event) => {
+  // ---- spike probe + auto-distill: {global:true} session/event listener ----
+  // Logs every event to EVENT_LOG so we can verify {global:true} spans all sessions.
+  // When DSH_REFLECT_AUTO_DISTILL=on, also triggers a distillation pass on each
+  // completed turn/end (debounced per-session, 5 min minimum gap).
+  const AUTO_DISTILL = process.env.DSH_REFLECT_AUTO_DISTILL === "on";
+  ctx.on("session/event", (subject, event) => {
+    // Probe: always write (cheap append).
+    if (EVENT_LOG) {
       try {
         const line = JSON.stringify({
           at: new Date().toISOString(),
@@ -383,8 +387,14 @@ function apply(ctx) {
       } catch {
         /* probe must never break the session */
       }
-    }, { global: true });
-  }
+    }
+    // Distill: fire-and-forget, guarded by env and event shape.
+    if (!AUTO_DISTILL) return;
+    if (event?.type !== "turn/end" || event?.kind !== "completed") return;
+    const agent = subject;
+    if (!agent) return;
+    tryDistill(ctx, event, agent).catch(() => {});
+  }, { global: true });
 
   // A `section()` provider, not a `system-prompt/assemble` listener: the registry
   // owns disposal and rejects a duplicate name outright (no hand-rolled idempotency

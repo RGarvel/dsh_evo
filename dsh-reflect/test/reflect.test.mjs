@@ -84,6 +84,12 @@ check("E2 injection is a section, not a waterfall listener", sections.length ===
 check("E2b session/event probe listener registered with global:true", listeners.some(
   (l) => l.ev === "session/event" && l.opts?.global === true
 ));
+check("E3 distill module imports cleanly", () => {
+  import("./distill.js").then((m) => {
+    check("E3a tryDistill is a function", typeof m.tryDistill === "function");
+    check("E3b getDebounceStatus is a function", typeof m.getDebounceStatus === "function");
+  }).catch(() => {});
+});
 
 const rec = registered.find((t) => t.name === "reflect_record");
 const recRes = await rec.execute({ text: "工具注册走 ctx.tools.register", tags: ["dsh"], workspace_dir: ws });

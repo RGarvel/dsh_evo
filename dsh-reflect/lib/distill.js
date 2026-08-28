@@ -27,7 +27,7 @@ function isTurnEnd(e) {
 }
 
 const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes per session
-const DISTILL_TIMEOUT_MS = 60_000;
+const DISTILL_TIMEOUT_MS = 120_000; // reasoning models need >60s to finish thinking + emit text
 // Verification tuning: dropped from 3 to 1 so the loop fires on the 2nd completed
 // turn of a fresh session (a real release would want 3+). env-overridable.
 const MIN_COMPLETED_TURNS = Number(process.env.REFLECT_MIN_TURNS || 1); // skip short sessions
@@ -222,6 +222,7 @@ export async function tryDistill(ctx, event, session) {
     }
     dbg(`streaming: provider=${provider} model=${model} timeoutSignal=${signal ? "on" : "unavailable"}`);
     let response = "";
+    let reasoning = "";
     // Diagnostic: what does the stream ACTUALLY yield for this model? Chunk-type
     // tallies + a sample from each delta kind, so one observation is conclusive.
     const typeCounts = {};
@@ -232,7 +233,7 @@ export async function tryDistill(ctx, event, session) {
         provider,
         model,
         messages,
-        maxTokens: 2000,
+        maxTokens: 4000,
         sessionId,
         signal,
       })) {
@@ -242,6 +243,7 @@ export async function tryDistill(ctx, event, session) {
           response += chunk.text;
           if (!samples["text-delta"]) samples["text-delta"] = chunk.text.slice(0, 60);
         } else if (t === "reasoning-delta" && chunk.text) {
+          reasoning += chunk.text;
           if (!samples["reasoning-delta"]) samples["reasoning-delta"] = chunk.text.slice(0, 60);
         } else if (t === "finish") {
           finishReason = chunk.reason;
@@ -255,20 +257,28 @@ export async function tryDistill(ctx, event, session) {
       return;
     }
     dbg(`chunk types=${JSON.stringify(typeCounts)} finish=${typeof finishReason === "object" ? JSON.stringify(finishReason) : finishReason} samples=${JSON.stringify(samples)}`);
-    dbg(`streamed response chars=${response.length} head=${JSON.stringify(response.slice(0, 80))}`);
+    dbg(`streamed text chars=${response.length} reasoning chars=${reasoning.length} textHead=${JSON.stringify(response.slice(0, 80))}`);
 
-    // Parse output and queue candidates.
-    const trimmed = response.trim();
-    if (!trimmed.startsWith("[")) { dbg(`bail: response not JSON array (head=${JSON.stringify(trimmed.slice(0, 40))})`); return; } // not JSON
-    let parsed;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      dbg("bail: invalid JSON from LLM");
-      ctx.logger?.warn?.("dsh-reflect distill: LLM did not return valid JSON");
-      return;
+    // Parse output and queue candidates. Prefer the model's visible answer; if the
+    // thinking model was cut off before emitting one, fall back to its reasoning
+    // text. Extraction slices the outermost JSON array so markdown fences or a
+    // prose lead-in/out don't defeat the parse (models rarely return pure JSON).
+    function extractArray(src) {
+      const start = src.indexOf("[");
+      const end = src.lastIndexOf("]");
+      if (start === -1 || end === -1 || end <= start) return null;
+      try {
+        const obj = JSON.parse(src.slice(start, end + 1));
+        return Array.isArray(obj) ? obj : null;
+      } catch {
+        return null;
+      }
     }
-    if (!Array.isArray(parsed)) { dbg("bail: parsed JSON not an array"); return; }
+    let parsed = extractArray(response);
+    let usedSource = "text";
+    if (!parsed) { parsed = extractArray(reasoning); usedSource = "reasoning"; }
+    if (!parsed) { dbg(`bail: no JSON array in text(chars=${response.length}) or reasoning(chars=${reasoning.length})`); return; }
+    dbg(`parsed array from=${usedSource} items=${parsed.length}`);
 
     // Queue new entries; skip merge/drop for now (manual review only).
     const { queuePending } = await import("./pending.js");

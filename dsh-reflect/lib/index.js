@@ -376,12 +376,15 @@ function apply(ctx) {
     // Probe: always write (cheap append).
     if (EVENT_LOG) {
       try {
+        // Debug: dump all own keys to discover actual event shape
+        const keys = event ? Object.keys(event) : [];
         const line = JSON.stringify({
           at: new Date().toISOString(),
           subjectType: typeof subject,
           eventType: event?.type,
-          reason: event?.reason?.kind,
+          reason: event?.data?.reason?.kind,
           seq: event?.seq,
+          keys: keys,
         });
         writeFileSync(EVENT_LOG, line + "\n", { flag: "a", encoding: "utf8" });
       } catch {
@@ -390,7 +393,7 @@ function apply(ctx) {
     }
     // Distill: fire-and-forget, guarded by env and event shape.
     if (!AUTO_DISTILL) return;
-    if (event?.type !== "turn/end" || event?.reason?.kind !== "completed") return;
+    if (event?.type !== "turn/end" || event?.data?.reason?.kind !== "completed") return;
     const agent = subject;
     if (!agent) return;
     tryDistill(ctx, event, agent).catch(() => {});

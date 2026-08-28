@@ -89,7 +89,9 @@ function selectCandidate(event, session) {
   // Need cwd to decide global vs workspace.
   const cwd = session.header?.cwd;
   if (!cwd) return null;
-  lastDistill.set(sessionId, now);
+  // NOTE: the debounce timer is armed by the CALLER only once we commit to a
+  // distillation pass — arming it here would let a turn that bails on the
+  // completed-turn count silently block the very next (qualifying) turn.
   return { sessionId, cwd };
 }
 
@@ -145,6 +147,9 @@ export async function tryDistill(ctx, event, session) {
       .filter((e) => e.seq < event.seq);
     if (completedSince.length < MIN_COMPLETED_TURNS) { dbg(`bail: completed turns before this = ${completedSince.length} < ${MIN_COMPLETED_TURNS}`); return; }
     const sinceSeq = completedSince[completedSince.length - 1].seq;
+    // Committed to a distillation pass — arm the per-session debounce now, so a
+    // turn that only bailed on the count (above) never suppresses the next one.
+    lastDistill.set(sessionId, Date.now());
 
     // Fetch message content.
     const content = await fetchTurnContent(sessionQuery, sessionId, sinceSeq, 100);

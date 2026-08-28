@@ -53,7 +53,8 @@
      - `searchEvents` 不可用 ❌：本机无 SQLite 索引（`SESSION_QUERY_SEARCH_DISABLED`），选材退化为 `listSessions` + `filterEvents(sessionId)`；
      - `turn/end{kind:"completed"}` 待确认（turn 还在流式中，待下一会话 turn 结束验证）。**待重启验**：重启后读 `~/.dsh/reflect/events.jsonl`，看 `sessionId` 分布——如果只有当前会话的 id，说明 `{global:true}` 不跨会话；如果有多条不同 sessionId，说明全局监听生效，可以开自动蒸馏回路。
    - **部署纪律**（本轮踩到）：部署副本 `index.js` 与源码差 51 行而 `store.js` 差 0 行（spike.4 一次只同步了一个文件），导致队列提示出现了但工作区没有——**核对固化**：`Compare-Object` 逐文件比所有 `lib/*.js`，且版本号与部署字节一一对应。
-   - **env 配置方式**（spike.9 踩坑）：`DSH_REFLECT_AUTO_DISTILL=on` 必须放在 `~/.dsh/.env` 文件（user 层），不能靠 sysdm.cpl 用户变量——因为 dsh web 进程启动时读的是 `.env` 文件（`dsh-app-boot` 的 `loadLayeredEnv`），不是系统用户变量。进程已运行时改 sysdm 变量不会生效，必须重启进程。`.env` 文件内容只需 `DSH_REFLECT_AUTO_DISTILL=on` 一行，无注释，无多余空行（否则 `parseEnv` 可能忽略）。
+   - **env 配置方式**（spike.9 踩坑）：`DSH_REFLECT_AUTO_DISTILL=on` 不能放 `~/.dsh/.env`（dsh-app-boot 的 `isBootstrapOnly` 把 `DSH_` 前缀全拦了），必须通过 sysdm.cpl 用户变量设置；修改后需**注销重登录**（不只是重启进程）才能让新 dsh web 进程继承。
+   - **turn/end 字段名 bug**（spike.10 修）：`SessionEventMap['turn/end']` 的字段是 `reason`（`'completed'|'aborted'|...'TurnEndReason`），不是 `kind`。distill.js 和 index.js 两处 `event?.kind` 全改成 `event?.reason`。events.jsonl 探针里 `kind` 字段也因此永远为空，后续改用 `reason`。
 
 ## 环境常量
 

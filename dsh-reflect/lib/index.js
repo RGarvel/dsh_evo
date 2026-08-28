@@ -38,9 +38,9 @@ const name = "tool-reflect";
 // session/event listener never registered. distill.js reads it optionally via
 // ctx.get("llm") at call time instead — the documented optional-service pattern.
 const inject = ["tools", "systemPrompt"];
-// spike.21: stamp every diagnostic line with version + process pid so a restart
-// straddle can't confuse which process handled a given turn/end. Stripped on release.
-const SPIKE_VER = "21";
+// Stamp every diagnostic line with version + process pid so a restart straddle
+// can't confuse which process handled a given turn/end. Stripped on release.
+const SPIKE_VER = "22";
 
 const SECTION_NAME = "dsh-reflect-memory";
 const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh", "reflect", "memory.md");

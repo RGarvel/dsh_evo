@@ -1,6 +1,8 @@
 # @garvel/dsh-reflect
 
 > 给 DeepSeek Harness 补上"越用越顺手"的自动回路（spike v0）
+>
+> 仓库：[github.com/RGarvel/dsh_evo](https://github.com/RGarvel/dsh_evo)
 
 DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆**。官方零件里有三层——会话内压缩（`dsh-compaction`）、项目指令（`dsh-agent-instructions`）、技能沉淀（`dsh-skill-filesystem`）——但缺一环：**没有"会话自动回看→提炼→写回"的蒸馏回路**。本插件把最小可用版本立起来：模型自己就是那台"蒸馏机"，插件提供存储、读写面和注入面。
 
@@ -37,7 +39,7 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 npm test
 ```
 
-63 项断言（含探针自身的 I5/I6：解析成功时记下真实 cwd，缺 agent 时记下 `no-agent` 而不是静默少一层）：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→注入 section）+ **render 元数回归**（E13/E14）+ **凭据筛查**（F1-F10，含"git sha 与正常中文不许误伤""拒绝时不许回显"两条反例）+ **队列**（G1-G7：溯源、配对去重、批准迁移、备份留痕、序号漂移只报不猜）+ **工具与 `/reflect-review` 共用同一存储**（H1-H6）+ **注入面**（E9-E12b：工作区层只在有 cwd 时出现、provider 对畸形/敌意 context 不抛、缺 `agent` 只 warn 一次；I1-I4：队列只报条数不报内容、token 预算整行裁剪）。
+109 项断言（含探针自身的 I5/I6：解析成功时记下真实 cwd，缺 agent 时记下 `no-agent` 而不是静默少一层）：store 纯逻辑（解析/标签/去重/备份/渲染/截断）+ 真实 `dsh-tools.defineTool` 注册烟雾（其 schema DSL 连拒两版后的合规写法本身是成果）+ 假 ctx 全链路（record→consolidate→recall→注入 section）+ **render 元数回归**（E13/E14）+ **凭据筛查**（F1-F10，含"git sha 与正常中文不许误伤""拒绝时不许回显"两条反例）+ **队列**（G1-G7：溯源、配对去重、批准迁移、备份留痕、序号漂移只报不猜）+ **工具与 `/reflect-review` 共用同一存储**（H1-H6）+ **注入面**（E9-E12b：工作区层只在有 cwd 时出现、provider 对畸形/敌意 context 不抛、缺 `agent` 只 warn 一次；I1-I4：队列只报条数不报内容、token 预算整行裁剪）。
 
 > 本机 `npm test` 会被执行策略拦（`npm.ps1 cannot be loaded`），直接 `node test/reflect.test.mjs`。
 
@@ -48,7 +50,7 @@ npm test
 ## 安装（本机 DSH）
 
 ```
-dsh plugin --profile web add file:D:/dsh_evo/dsh-reflect   # 或 npm 发布后 @garvel/dsh-reflect
+dsh plugin --profile web add file:<path-to-this-repo>   # 或 npm 发布后 @garvel/dsh-reflect
 # 然后杀掉 web 进程、重新 `dsh web`（CLI 没有 restart 子命令；配置与插件不热重载）
 ```
 

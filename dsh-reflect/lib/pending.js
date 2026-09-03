@@ -30,19 +30,29 @@ export function parsePendingLine(line) {
   const m = /^-\s+(.*)$/.exec(String(line).trim());
   if (!m) return null;
   let body = m[1];
+  let kind = "new";
+  let idx = 0;
+  const kindMatch = /^\[([mds]):(\d+)\]\s+/.exec(body);
+  if (kindMatch) {
+    kind = kindMatch[1] === "m" ? "merge" : kindMatch[1] === "d" ? "drop" : "supersede";
+    idx = Number(kindMatch[2]);
+    body = body.slice(kindMatch[0].length);
+  }
   const tags = [];
   body = body.replace(/((?:\s+#[\w一-鿿.-]+)+)\s*$/g, (tail) => {
     for (const t of tail.trim().split(/\s+/)) tags.push(t.slice(1));
     return "";
   });
   let source = "";
-  body = body.replace(/\s+@src:(\S+)\s*$/g, (_all, src) => {
+  body = body.replace(/(?:\s+|^)@src:(\S+)\s*$/g, (_all, src) => {
     source = src;
     return "";
   });
   const text = body.trim();
-  if (!text) return null;
-  return { text, tags, ...(source ? { source } : {}) };
+  if (!text && kind === "new") return null; // merge/drop may carry no text
+  const out = { kind, text, tags, ...(source ? { source } : {}) };
+  if (kind !== "new") out.idx = idx;
+  return out;
 }
 
 export function parsePending(content) {
@@ -57,7 +67,12 @@ export function parsePending(content) {
 export function formatPendingLine(entry) {
   const src = entry.source ? ` @src:${entry.source}` : "";
   const tagPart = entry.tags && entry.tags.length ? " " + entry.tags.map((t) => `#${t}`).join(" ") : "";
-  return `- ${entry.text}${src}${tagPart}`;
+  let head;
+  if (entry.kind === "merge") head = `[m:${entry.idx}] ${entry.text || ""}`;
+  else if (entry.kind === "drop") head = `[d:${entry.idx}]`;
+  else if (entry.kind === "supersede") head = `[s:${entry.idx}] ${entry.text || ""}`;
+  else head = entry.text || "";
+  return `- ${head}${src}${tagPart}`;
 }
 
 export function formatPending(entries) {
@@ -86,20 +101,30 @@ export function rewritePending(file, entries) {
  * Append one candidate unless it duplicates the queue or the already-approved list.
  *
  * @param file - queue file.
- * @param entry - `{text, tags?, source?}` (text must already be screened).
- * @param against - approved entries to dedupe against (pass `readPending` + the
- *   target memory entries; deduping here is what stops the queue refilling with
- *   lessons the model already has).
+ * @param entry - `{kind?, idx?, text, tags?, source?}`; `kind` defaults to "new".
+ *   `merge` carries `idx` (1-based into the target memory) + non-empty text;
+ *   `drop` carries `idx` and no text. `against` dedupes new/merge by text and
+ *   drop by (kind,idx), which stops the queue refilling with the same proposal.
  */
 export function queuePending(file, entry, against = []) {
   const clean = String(entry.text ?? "").trim().replace(/\s*\n\s*/g, " ");
+  const kind = entry.kind === "merge" || entry.kind === "drop" || entry.kind === "supersede" ? entry.kind : "new";
   const queued = readPending(file);
-  if (!clean) return { stored: false, reason: "empty", count: queued.length };
-  const dupes = [...queued, ...against];
-  if (dupes.some((e) => normalize(e.text) === normalize(clean))) {
-    return { stored: false, reason: "duplicate", count: queued.length };
+  if (kind !== "drop" && !clean) return { stored: false, reason: "empty", count: queued.length };
+  if (kind !== "new" && !(Number.isInteger(entry.idx) && entry.idx > 0)) {
+    return { stored: false, reason: "bad-idx", count: queued.length };
   }
-  queued.push({ text: clean, tags: (entry.tags || []).map((t) => String(t).trim()).filter(Boolean), ...(entry.source ? { source: entry.source } : {}) });
+  const dupes = [...queued, ...against];
+  const isDup = kind === "drop"
+    ? queued.some((e) => e.kind === "drop" && e.idx === entry.idx)
+    : dupes.some((e) => normalize(e.text) === normalize(clean));
+  if (isDup) return { stored: false, reason: "duplicate", count: queued.length };
+  queued.push({
+    ...(kind !== "new" ? { kind, idx: entry.idx } : {}),
+    text: clean,
+    tags: (entry.tags || []).map((t) => String(t).trim()).filter(Boolean),
+    ...(entry.source ? { source: entry.source } : {}),
+  });
   rewritePending(file, queued);
   return { stored: true, count: queued.length };
 }
@@ -118,13 +143,14 @@ export function pendingPreview(entry, index) {
  * 1-based, as shown by `pendingPreview`.
  *
  * @param file - queue file.
- * @param targetFile - memory file an accepted line is recorded into.
+ * @param targetFile - memory file an accepted line lands in.
  * @param accept - indexes to promote.
  * @param drop - indexes to discard.
- * @param record - `(file, text, tags) => result` (store.recordEntry, injected to
- *   keep this module free of the write layer it does not own).
+ * @param ops - `{record, merge, remove}` primitives from store.js, injected to
+ *   keep this module free of the write layer it does not own. `merge`/`remove`
+ *   take a 1-based memory index (the `idx` stored on a merge/drop entry).
  */
-export function resolvePending(file, targetFile, accept = [], drop = [], record) {
+export function resolvePending(file, targetFile, accept = [], drop = [], ops) {
   const queued = readPending(file);
   const wanted = (list) => (Array.isArray(list) ? list : []).map(Number).filter(Number.isInteger);
   const accepts = wanted(accept);
@@ -137,11 +163,18 @@ export function resolvePending(file, targetFile, accept = [], drop = [], record)
   queued.forEach((entry, i) => {
     const index = i + 1;
     if (accepts.includes(index)) {
-      const res = record(targetFile, entry.text, entry.tags || []);
-      moved.push({ index, text: entry.text, ...(entry.source ? { source: entry.source } : {}), ...res });
+      const kind = entry.kind || "new";
+      const res = kind === "merge"
+        ? ops.merge(targetFile, entry.idx, entry.text, entry.tags || [])
+        : kind === "drop"
+          ? ops.remove(targetFile, entry.idx)
+          : kind === "supersede"
+            ? ops.supersede(targetFile, entry.idx, entry.text, entry.tags || [])
+            : ops.record(targetFile, entry.text, entry.tags || []);
+      moved.push({ index, kind, ...(kind !== "new" ? { idx: entry.idx } : {}), ...(entry.text ? { text: entry.text } : {}), ...(entry.source ? { source: entry.source } : {}), ...res });
       seen.add(index);
     } else if (drops.includes(index)) {
-      discarded.push({ index, text: entry.text });
+      discarded.push({ index, kind: entry.kind || "new", text: entry.text });
       seen.add(index);
     }
   });

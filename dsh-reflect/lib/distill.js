@@ -52,9 +52,11 @@ OUTPUT format — one JSON array of objects, nothing else:
 [
   { "verdict": "new", "text": "<lesson>", "tags": ["tag1","tag2"] },
   { "verdict": "merge", "idx": 3, "text": "<improved version>" },
+  { "verdict": "supersede", "idx": 5, "text": "<new lesson that replaces lesson #5>" },
   { "verdict": "drop", "idx": 7 }
 ]
 For merge: idx is 0-based into the existing-lessons list (global first, then workspace).
+For supersede: like merge, but the old lesson stays in the body (soft-retired: it stops injecting) while the new lesson is appended on top.
 For drop: idx is 0-based into the existing-lessons list.
 If you return only "new" items, the existing lessons are preserved unchanged.`;
 
@@ -283,15 +285,16 @@ export async function tryDistill(ctx, event, session) {
     // Queue new entries; skip merge/drop for now (manual review only).
     const { queuePending } = await import("./pending.js");
     const { screen } = await import("./redact.js");
-    let queued = 0;
-    for (const item of parsed) {
-      if (item.verdict !== "new" || !item.text) continue;
-      const screenResult = screen(item.text);
-      if (!screenResult.allowed) { dbg(`skip candidate blocked by redaction: ${JSON.stringify(item.text.slice(0, 40))}`); continue; }
-      const tagStr = (item.tags || []).join(" ");
-      queuePending(pendingFile, `- ${item.text}${tagStr ? " #" + tagStr : ""} @src:${sessionId}@distill`, "spike-auto-distill");
-      queued++;
-    }
+    const { readEntries } = await import("./store.js");
+    const queued = processCandidates(parsed, {
+      screen,
+      queuePending,
+      readEntries,
+      pendingFile,
+      memoryFile,
+      sessionId,
+      dbg,
+    });
     dbg(`done: parsed=${parsed.length} queued=${queued}`);
     if (queued > 0) {
       ctx.logger?.info?.(`dsh-reflect distill: queued ${queued} candidate(s) for ${sessionId}`);
@@ -304,4 +307,91 @@ export async function tryDistill(ctx, event, session) {
 
 export function getDebounceStatus() {
   return Array.from(lastDistill.entries()).map(([id, ts]) => ({ id, lastDistillAt: new Date(ts).toISOString() }));
+}
+
+/**
+ * Turn distilled JSON items into pending-queue entries.
+ *
+ * Extracted from tryDistill so the two wiring bugs this function fixes can be
+ * regression-tested directly:
+ *  1. `screen()` returns `{ text, hits, truncated }` — there is NO `allowed`
+ *     flag. spike.22 tested `!screenResult.allowed`, which is always true, so
+ *     every candidate was silently dropped (distill-debug.log showed parsed>0
+ *     yet queued=0). A safe entry is `hits.length === 0`.
+ *  2. `queuePending(file, entry, against)` wants `entry` as an OBJECT
+ *     `{ text, tags, source }` and `against` as the existing-entries list.
+ *     spike.22 passed a markdown string and a string label, so even a survivor
+ *     of (1) queued as `reason: "empty"`.
+ *
+ * @param parsed - decoded `{verdict,text,tags}[]` from the LLM JSON answer.
+ * @param deps    - injected to keep this pure of LLM/session plumbing.
+ * @returns number of entries actually stored (redaction/dup/empty all excluded).
+ */
+export function processCandidates(
+  parsed,
+  { screen, queuePending, readEntries, pendingFile, memoryFile, sessionId, dbg = () => {} },
+) {
+  const existing = memoryFile ? readEntries(memoryFile) : [];
+  let queued = 0;
+  const tagsOf = (t) => (Array.isArray(t) ? t.map((s) => String(s).trim()).filter(Boolean) : []);
+  const src = `${sessionId}@distill`;
+  const validIdx = (raw) => Number.isInteger(Number(raw)) && Number(raw) >= 0 && Number(raw) < existing.length;
+  for (const item of parsed) {
+    if (!item || !item.verdict) continue;
+    const verdict = item.verdict;
+
+    if (verdict === "new") {
+      if (!item.text) continue;
+      const sr = screen(item.text);
+      if (sr.hits.length) {
+        dbg(`skip new blocked by redaction: ${JSON.stringify(item.text.slice(0, 40))}`);
+        continue;
+      }
+      const res = queuePending(pendingFile, { text: sr.text, tags: tagsOf(item.tags), source: src }, existing);
+      if (res && res.stored) queued++;
+    } else if (verdict === "merge") {
+      if (!validIdx(item.idx)) {
+        dbg(`skip merge with out-of-range idx ${item.idx}`);
+        continue;
+      }
+      if (!item.text) continue;
+      const sr = screen(item.text);
+      if (sr.hits.length) {
+        dbg(`skip merge blocked by redaction: ${JSON.stringify(item.text.slice(0, 40))}`);
+        continue;
+      }
+      const res = queuePending(
+        pendingFile,
+        // distill's idx is 0-based into the existing list; store/pending use 1-based
+        { kind: "merge", idx: Number(item.idx) + 1, text: sr.text, tags: tagsOf(item.tags), source: src },
+        existing,
+      );
+      if (res && res.stored) queued++;
+    } else if (verdict === "drop") {
+      if (!validIdx(item.idx)) {
+        dbg(`skip drop with out-of-range idx ${item.idx}`);
+        continue;
+      }
+      const res = queuePending(pendingFile, { kind: "drop", idx: Number(item.idx) + 1, source: src }, existing);
+      if (res && res.stored) queued++;
+    } else if (verdict === "supersede") {
+      if (!validIdx(item.idx)) {
+        dbg(`skip supersede with out-of-range idx ${item.idx}`);
+        continue;
+      }
+      if (!item.text) continue;
+      const sr = screen(item.text);
+      if (sr.hits.length) {
+        dbg(`skip supersede blocked by redaction: ${JSON.stringify(item.text.slice(0, 40))}`);
+        continue;
+      }
+      const res = queuePending(
+        pendingFile,
+        { kind: "supersede", idx: Number(item.idx) + 1, text: sr.text, tags: tagsOf(item.tags), source: src },
+        existing,
+      );
+      if (res && res.stored) queued++;
+    }
+  }
+  return queued;
 }

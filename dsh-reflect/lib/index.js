@@ -22,15 +22,19 @@ import { HarnessError } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
   CHARS_PER_TOKEN,
+  mergeEntry,
   parseLine,
   recordEntry,
   readEntries,
+  removeEntry,
   renderInjection,
   rewriteEntries,
+  supersedeEntry,
 } from "./store.js";
 import { blockReason, screen } from "./redact.js";
 import { pendingPreview, queuePending, readPending, resolvePending } from "./pending.js";
 import { tryDistill } from "./distill.js";
+import { activeKeys, keyOf, loadMeta, metaPathFor, reconcile, saveMeta, touchHit } from "./meta.js";
 
 const name = "tool-reflect";
 // llm is NOT injected: declaring it made this bundle-mounted plugin wait forever
@@ -38,6 +42,21 @@ const name = "tool-reflect";
 // session/event listener never registered. distill.js reads it optionally via
 // ctx.get("llm") at call time instead — the documented optional-service pattern.
 const inject = ["tools", "systemPrompt"];
+// Step 3: pending resolve dispatches new/merge/drop through store primitives;
+// the queue only proposes — approve still applies each effect.
+const storeOps = { record: recordEntry, merge: mergeEntry, remove: removeEntry, supersede: supersedeEntry };
+const describeMove = (m) => {
+  if (m.kind === "merge") return `approved #${m.index} (merge→memory #${m.idx}) ${m.text}`;
+  if (m.kind === "drop") return `approved #${m.index} (remove memory #${m.idx})`;
+  if (m.kind === "supersede") return `approved #${m.index} (supersede memory #${m.idx}) ${m.text}`;
+  return `approved #${m.index} ${m.text}`;
+};
+const slashMove = (m) => {
+  if (m.kind === "merge") return `✓ 合并 #${m.index} → memory #${m.idx}：${m.text}`;
+  if (m.kind === "drop") return `✓ 删除 memory #${m.idx}（候选 #${m.index}）`;
+  if (m.kind === "supersede") return `✓ 取代 memory #${m.idx}（新增）：${m.text}`;
+  return `✓ 入库 #${m.index}：${m.text}`;
+};
 // Stamp every diagnostic line with version + process pid so a restart straddle
 // can't confuse which process handled a given turn/end. Stripped on release.
 const SPIKE_VER = "22";
@@ -204,6 +223,19 @@ function apply(ctx) {
       const scope = args.scope || "all";
       const grab = (file) => {
         const entries = readEntries(file);
+        if (entries.length) {
+          try {
+            // Recall is the ONLY hit source: an injected lesson is exposure,
+            // not a hit (self-amplification guard). Failures never break recall.
+            const metaFile = metaPathFor(file);
+            const meta = reconcile(loadMeta(metaFile), entries);
+            const now = new Date().toISOString();
+            for (const e of entries) touchHit(meta, keyOf(e.text), now);
+            saveMeta(metaFile, meta);
+          } catch {
+            /* hit accounting must never break recall */
+          }
+        }
         return { file, count: entries.length, entries };
       };
       let workspace = { count: 0, skipped: true };
@@ -311,12 +343,12 @@ function apply(ctx) {
         const ids = Array.isArray(args.ids) ? args.ids : [];
         if (!ids.length) throw new HarnessError(`reflect_pending: action=${action} needs ids from a prior list`, "invalid_request");
         const res = action === "approve"
-          ? resolvePending(queue, memory, ids, [], (file, text, tags) => recordEntry(file, text, tags))
-          : resolvePending(queue, memory, [], ids, () => ({ stored: false }));
+          ? resolvePending(queue, memory, ids, [], storeOps)
+          : resolvePending(queue, memory, [], ids, storeOps);
         return {
           action, file: queue, count: res.count,
           moved: res.moved.length, discarded: res.discarded.length,
-          preview: [...res.moved.map((m) => `approved #${m.index} ${m.text}`), ...res.discarded.map((d) => `dropped #${d.index} ${d.text}`)],
+          preview: [...res.moved.map(describeMove), ...res.discarded.map((d) => `dropped #${d.index} ${d.text}`)],
           ...(res.invalid.length ? { invalid: res.invalid } : {}),
           ...(res.backup ? { backup: res.backup } : {}),
         };
@@ -352,7 +384,7 @@ function apply(ctx) {
         }
         if (verb === "clear") {
           if (!queued.length) return { kind: "success", text: "队列已经是空的。" };
-          const res = resolvePending(queue, memory, [], queued.map((_e, i) => i + 1), () => ({ stored: false }));
+          const res = resolvePending(queue, memory, [], queued.map((_e, i) => i + 1), storeOps);
           return { kind: "success", text: `已丢弃 ${res.discarded.length} 条候选（备份：${res.backup || "无"}）。` };
         }
         if (verb !== "approve" && verb !== "accept" && verb !== "drop") {
@@ -361,9 +393,9 @@ function apply(ctx) {
         if (!indexes.length) return { kind: "error", text: "要给序号，例如 approve 1,3" };
         const accept = verb === "drop" ? [] : indexes;
         const drop = verb === "drop" ? indexes : [];
-        const res = resolvePending(queue, memory, accept, drop, (file, text, tags) => recordEntry(file, text, tags));
+        const res = resolvePending(queue, memory, accept, drop, storeOps);
         const lines = [
-          ...res.moved.map((m) => `✓ 入库 #${m.index}：${m.text}`),
+          ...res.moved.map(slashMove),
           ...res.discarded.map((d) => `✗ 丢弃 #${d.index}：${d.text}`),
         ];
         if (res.invalid.length) lines.push(`序号不存在：${res.invalid.join(", ")}`);
@@ -466,8 +498,31 @@ function apply(ctx) {
           ctx.logger?.warn?.("dsh-reflect: the assemble context carried no `agent`; workspace memory will not be injected (harness shape changed?)");
         }
         const cwd = agent?.session?.header?.cwd;
-        const globalEntries = readEntries(GLOBAL_FILE);
-        const workspaceEntries = cwd ? readEntries(join(cwd, WORKSPACE_REL)) : [];
+        // Collect active lessons plus their reconciled meta: superseded rows are
+        // dropped from injection (step 4) and hitCount feeds the rank (step 5).
+        const collect = (file, entries) => {
+          if (!entries.length) return { entries, meta: null };
+          try {
+            const meta = reconcile(loadMeta(metaPathFor(file)), entries);
+            const keys = activeKeys(meta);
+            return { entries: entries.filter((e) => keys.has(keyOf(e.text))), meta };
+          } catch {
+            return { entries, meta: null };
+          }
+        };
+        const wsC = cwd ? collect(join(cwd, WORKSPACE_REL), readEntries(join(cwd, WORKSPACE_REL))) : { entries: [], meta: null };
+        const glC = collect(GLOBAL_FILE, readEntries(GLOBAL_FILE));
+        const workspaceEntries = wsC.entries;
+        const globalEntries = glC.entries;
+        // rank = hitCount per normalized text; workspace meta wins on a cross-scope dup.
+        const rankLookup = new Map();
+        for (const m of [wsC.meta, glC.meta]) {
+          if (!m) continue;
+          for (const [k, row] of Object.entries(m.entries || {})) {
+            if (!rankLookup.has(k)) rankLookup.set(k, Number(row?.hitCount) || 0);
+          }
+        }
+        const rank = (e) => rankLookup.get(keyOf(e.text)) || 0;
         // Count both queues a session could be waiting on; contents never render here.
         const pendingCount =
           readPending(GLOBAL_PENDING).length +
@@ -476,6 +531,7 @@ function apply(ctx) {
           maxTokens: INJECT_MAX_TOKENS,
           maxChars: INJECT_MAX_CHARS,
           pendingCount,
+          rank,
         });
         reportShape({
           stage: cwdStage(agent),

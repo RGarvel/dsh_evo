@@ -69,3 +69,4 @@
 - 本机 dsh：`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`（rev 29b22c5）；GUI http://127.0.0.1:3080；
 - 依赖解析：`dsh-reflect/node_modules/@deepseek-ai/{dsh-tools,dsh-llm}` 是指向上述树的 junction（`.gitignore` 已排除 node_modules）；
 - 相关仓库（本机另见）：GUI spike · RFC-0001 · workspace-migrate 工具（0.1.6 已发布，本工作区就是用它迁过来的）。
+- 发布记录：`dsh-reflect/docs/release-notes.md`（首次 GitHub push 的完整动作 + 网络坑：github.com 阻断、改用 SSH-over-443）。

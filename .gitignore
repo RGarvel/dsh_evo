@@ -1,3 +1,6 @@
 # 工作区记忆本体随项目进 git（团队共享），但 consolidate 的自动备份只留本地
 .dsh/memory.md.bak-*
+# 队列与缓存 sidecar 是本地运行时产物，不进 git（只有已批准的 memory.md 团队共享）
+.dsh/memory.meta.json
+.dsh/memory-pending.md
 node_modules/

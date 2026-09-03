@@ -28,7 +28,14 @@
   本机 `id_ed25519` 已配到 RGarvel；自检：`ssh -T -p 443 git@ssh.github.com` 应回 `Hi RGarvel! You've successfully authenticated...`。
 - 此仓库 remote 已永久设为 ssh-over-443，**勿改回 https**，否则再 push 会断。
 
+### npm 首次发布（2026-09-03）
+
+- ✅ `@garvel/dsh-reflect@0.0.1-spike.22` → `--tag spike`（public）。tarball 实测 `200 OK`。
+- 认证两道坑：① 账号开 2FA 时，旧 bypass-2FA token 被 npm 禁 direct publish（报 404/E403），先 `npm login` 重登出合规 token；② publish 仍要 EOTP 网页认证——**必须真终端**跑 `npm publish --tag spike`，npm 打印 `https://www.npmjs.com/auth/cli/<id>`，浏览器打开完成认证后自动发布。agent/脚本跑会因 auth URL 掩码 + 缺少浏览器而卡住。
+- 发布后现象：`npm view` 可能短暂 404（metadata CDN 缓存了发布前的 404），但 tarball（`…/@garvel/dsh-reflect/-/dsh-reflect-<v>.tgz`）与 `/-/v1/search?text=maintainer:garvel` **立即可见**，几分钟内 metadata 自愈——别误判为发布失败。
+
 ### 下次发布备忘
 
 - 推送：`git -C <repo-root> push origin main`（remote 已是 ssh-over-443）。
-- npm 发布（仍未做）：`npm publish --tag spike`——首发用 spike tag；EOTP 网页认证需在终端手动跑；发布前记得拿掉 `_ASSEMBLY_FILE` 诊断面（README「v0 边界」已标）。
+- npm 发新版：改 `package.json` 的 version → 真终端 `npm publish --tag spike`（EOTP 网页认证）。
+- 仍未做：发布前拿掉 `_ASSEMBLY_FILE` 诊断面（README「v0 边界」已标）。

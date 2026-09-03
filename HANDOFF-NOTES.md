@@ -44,7 +44,7 @@
    - #5512（General `[bug]`）：oneOf 参数被字符串化（rev 29b22c5 定位，7 步根因链，堵死动态 Cordis 插件入口）；
    - #5511（General `[doc]`）：`output.render(args, value)` 第二参文档。
    纠错：#4879 实为「Web GUI 侧边栏『视图切换』seam」讨论（作者自己的 dsh-channel-view，与 dsh-reflect 无关），早前张冠李戴已纠正。`AssembleContext.agent` 那条也不是缺陷（declaration merging 已声明），仅 `.d.ts` 分散易漏读。
-5. 发版决策：@garvel/dsh-reflect 首发用 --tag spike；发布必须你终端跑（EOTP 网页认证）。当前版本 `0.0.1-spike.7`，`files` 已含 `lib`/`docs`/`cordis.patch.yml`/`README`/`LICENSE`，`dsh.bundle` 声明也已就位——发出去的包可直接 `dsh plugin add @garvel/dsh-reflect`。
+5. ✅ 已发布（2026-09-03）：`@garvel/dsh-reflect@0.0.1-spike.22` → npm，`--tag spike`（public 首发）。认证两道坑：① 账号开了 2FA，旧 bypass-2FA token 被 npm 禁 direct publish（报 404/E403），须先 `npm login` 重登；② publish 仍要 EOTP 网页认证——**必须真终端**跑 `npm publish --tag spike`，弹浏览器 auth URL 完成认证后自动发布。发布后 `npm view` 可能短暂 404（metadata CDN 缓存了发布前的 404），tarball/search 立即可见、几分钟自愈。`files` 已含 `lib`/`docs`/`cordis.patch.yml`/`README`/`LICENSE`，装法 `dsh plugin add @garvel/dsh-reflect`。
 6. **实现进度（按设计文档 §4 切分）**：
    - 第 1 步探针：`scope→cwd` 那问已由源码定案（见 ❌→✅ 条）；**两个剩的探针已落地为 spike.7 的自证代码**：`session/event` 监听器写 `~/.dsh/reflect/events.jsonl`（`{global:true}`，重启后读文件看 session 分布），`searchEvents` 本机无 SQLite（`SESSION_QUERY_SEARCH_DISABLED`），选材退化为 `listSessions` + `filterEvents`；
    - **第 2 步 ✅ 已落地**（2026-08-28 晚，`0.0.1-spike.3`，56/56 测试）：`lib/redact.js` 凭据筛查（record/consolidate/queue 三条写路径全过闸，拒绝时不回显命中内容，小写 hex git sha 与正常中文不误伤）+ `lib/pending.js` 复核队列（`- text @src:session-x@n #tag` 格式、与配对 memory 文件去重、approve 才入 `memory.md`、每次重写自动 `.bak-` 留痕、序号漂移只报不猜）+ 第 4 个工具 `reflect_pending`（list/queue/approve/drop）+ 人用命令 `/reflect-review [global] [list|approve 1,2|drop 3|clear]`（`ctx.get('commands')` 可选依赖，工作区取 `agent.session.header.cwd`）；

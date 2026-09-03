@@ -1,14 +1,14 @@
-# 交接备忘（由 D:\rp 会话 2026-08-28 迁移而来）
+# 交接备忘（由旧工作区会话 2026-08-28 迁移而来）
 
 ## ⚠️ 误迁与还原记录（先读这条）
 
-上一会话先用 `migrate_workspace` 把 rp 会话整体迁了进来（生成 `session-e06fac5b…`，含全部 rp 历史）——这**不是**你要的形态，已还原：
+上一会话先用 `migrate_workspace` 把旧会话整体迁了进来（生成 `<migrated-session>…`，含全部旧历史）——这**不是**你要的形态，已还原：
 
-- `e06fac5b` 已归档（历史仍可从归档会话翻查，dsh_evo 侧边栏不再显示）；
-- b95d03d5 已从 `workspace.json` 的归档名单移除（host 无 unarchive API，走了文件层还原，**需要重启 dsh web 才生效**——顺手把 QQ 回绑也带上，prefs 已指回 b95d）；
-- 拷进 dsh_evo 的 17 个 rp 杂文件与 rp 侧占位 stub 均已删除。
+- `<migrated-session>` 已归档（历史仍可从归档会话翻查，dsh_evo 侧边栏不再显示）；
+- `<target-session>` 已从 `workspace.json` 的归档名单移除（host 无 unarchive API，走了文件层还原，**需要重启 dsh web 才生效**——顺手把频道回绑也带上，prefs 已指回 `<target-session>`）；
+- 拷进 dsh_evo 的 17 个旧工作区杂文件与源侧占位 stub 均已删除。
 
-**本工作区的正确用法**：不继承整段 rp 对话。新开对话=在 GUI 侧边栏于 dsh_evo 工作区点「新建对话」，第一句让模型读本文件即可无缝接手（已验证事实+待办都在下面）。
+**本工作区的正确用法**：不继承整段旧对话。新开对话=在 GUI 侧边栏于 dsh_evo 工作区点「新建对话」，第一句让模型读本文件即可无缝接手（已验证事实+待办都在下面）。
 
 ## dsh-reflect 原型（已装入本机 profile 并实机验证）
 
@@ -46,7 +46,7 @@
 6. **实现进度（按设计文档 §4 切分）**：
    - 第 1 步探针：`scope→cwd` 那问已由源码定案（见 ❌→✅ 条）；**两个剩的探针已落地为 spike.7 的自证代码**：`session/event` 监听器写 `~/.dsh/reflect/events.jsonl`（`{global:true}`，重启后读文件看 session 分布），`searchEvents` 本机无 SQLite（`SESSION_QUERY_SEARCH_DISABLED`），选材退化为 `listSessions` + `filterEvents`；
    - **第 2 步 ✅ 已落地**（2026-08-28 晚，`0.0.1-spike.3`，56/56 测试）：`lib/redact.js` 凭据筛查（record/consolidate/queue 三条写路径全过闸，拒绝时不回显命中内容，小写 hex git sha 与正常中文不误伤）+ `lib/pending.js` 复核队列（`- text @src:session-x@n #tag` 格式、与配对 memory 文件去重、approve 才入 `memory.md`、每次重写自动 `.bak-` 留痕、序号漂移只报不猜）+ 第 4 个工具 `reflect_pending`（list/queue/approve/drop）+ 人用命令 `/reflect-review [global] [list|approve 1,2|drop 3|clear]`（`ctx.get('commands')` 可选依赖，工作区取 `agent.session.header.cwd`）；
-   - **第 4 步 ✅ 终验通过**（同日，`0.0.1-spike.6`，63/63 测试）：注入换成 `ctx.systemPrompt.section({name, order:950, text:(context)=>…})`（源码核对：`PromptSection.order` 必填、`text` 可传 provider、`section()` 自带 disposer、重名直接 throw）；工作区层随 `context.agent?.session?.header?.cwd` 一起注入；预算改 token 口径，但**除数直接取 harness 自己的 `estimateSystemTokens` = `ceil(len/4)+4`**——`dsh-token-meter` 只导出 `TokenMeter` 类，`estimateMessage` 面向会话消息（role framing + 每块 `+4`），拿伪造 Message 去调只会让预算与循环实际计费不一致，所以 4 chars/token 就是契约（`CHARS_PER_TOKEN` 在 store.js）；超限**整行**从尾部丢并声明"还有 N 条未注入"；缺 `agent` 时 `logger.warn` 一次不静默；队列只报条数、内容绝不进提示词（I2 守着）；env 增至五个（`DSH_REFLECT_INJECT_MAX_TOKENS` 默认 600，`_INJECT_MAX_CHARS` 保留为直接覆盖且优先级更高，`_ASSEMBLY_FILE` 默认 `~/.dsh/reflect/assembly.json` 记录每次组装的 `{stage, cwd, global, workspace, pending, chars, budgetChars, assemblies, at}`，`off` 关闭）；**工作区组排在组前**，预算紧时先丢旧的全局教训而非当前项目教训（spike.6 修正，否则工作区总被尾部截断吃掉）；自证探针定位到实机 cwd 是 `D:\dsh_app`（不是我以为的 `D:\dsh_evo`），读写路径全证无罪，断点只在那条 cwd 链。
+   - **第 4 步 ✅ 终验通过**（同日，`0.0.1-spike.6`，63/63 测试）：注入换成 `ctx.systemPrompt.section({name, order:950, text:(context)=>…})`（源码核对：`PromptSection.order` 必填、`text` 可传 provider、`section()` 自带 disposer、重名直接 throw）；工作区层随 `context.agent?.session?.header?.cwd` 一起注入；预算改 token 口径，但**除数直接取 harness 自己的 `estimateSystemTokens` = `ceil(len/4)+4`**——`dsh-token-meter` 只导出 `TokenMeter` 类，`estimateMessage` 面向会话消息（role framing + 每块 `+4`），拿伪造 Message 去调只会让预算与循环实际计费不一致，所以 4 chars/token 就是契约（`CHARS_PER_TOKEN` 在 store.js）；超限**整行**从尾部丢并声明"还有 N 条未注入"；缺 `agent` 时 `logger.warn` 一次不静默；队列只报条数、内容绝不进提示词（I2 守着）；env 增至五个（`DSH_REFLECT_INJECT_MAX_TOKENS` 默认 600，`_INJECT_MAX_CHARS` 保留为直接覆盖且优先级更高，`_ASSEMBLY_FILE` 默认 `~/.dsh/reflect/assembly.json` 记录每次组装的 `{stage, cwd, global, workspace, pending, chars, budgetChars, assemblies, at}`，`off` 关闭）；**工作区组排在组前**，预算紧时先丢旧的全局教训而非当前项目教训（spike.6 修正，否则工作区总被尾部截断吃掉）；自证探针定位到实机 cwd 是另一工作区目录（不是 dsh_evo），读写路径全证无罪，断点只在那条 cwd 链。
    - **仍不自动**：没有生产者往队列里写东西；全局队列现有一条探针（`commands.register()`/`section()` 自管 dispose 那条），等你 `/reflect-review global approve 1`；
    - **第 3 步回路落地**（`0.0.1-spike.9`，同日）：新增 `lib/distill.js`，包含 `tryDistill(ctx, event, agent)` — 由 `session/event` 监听器在 `turn/end{kind:"completed"}` 时触发（debounce 5min/会话），调用 `sessionQuery.listEvents` + `filterEvents` 提取用户/助手消息，通过 `llm.stream`（复用会话自身的 provider/model）提炼结构化教训，新条目进 `pending.md`（过 redaction），merge/drop 暂不支持自动应用（需人工复核）。**默认关闭**：`DSH_REFLECT_AUTO_DISTILL=on` 才生效。`/reflect-distill` 命令保留为手动入口（spike stub）。
      - `{global:true}` 跨会话 ✅：events.jsonl 同时出现 seq `78691+`（当前会话）和 `69106+`（另一会话），证明监听器能看到所有会话的 turn 流（`turn/start`、`user/message`、`assistant/chunk`、`tool/call`、`tool/result`、`step/end` 等）；
@@ -66,6 +66,6 @@
 
 ## 环境常量
 
-- 本机 dsh：`C:\Users\阮家威\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh`（rev 29b22c5）；GUI http://127.0.0.1:3080；
+- 本机 dsh：`%APPDATA%\npm\node_modules\@deepseek-ai\dsh`（rev 29b22c5）；GUI http://127.0.0.1:3080；
 - 依赖解析：`dsh-reflect/node_modules/@deepseek-ai/{dsh-tools,dsh-llm}` 是指向上述树的 junction（`.gitignore` 已排除 node_modules）；
-- 相关仓库：`D:\dsh-channel-view`（GUI spike）· `D:\dsh-channel-spec`（RFC-0001）· `D:\movedsh\dsh-tool-workspace-migrate`（0.1.6 已发布，本工作区就是用它迁过来的）。
+- 相关仓库（本机另见）：GUI spike · RFC-0001 · workspace-migrate 工具（0.1.6 已发布，本工作区就是用它迁过来的）。

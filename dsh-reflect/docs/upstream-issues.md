@@ -1,22 +1,23 @@
-# 上游 issue 草稿（拟提 deepseek-ai/deepseek-harness）
+# 上游提交记录（deepseek-ai/deepseek-harness）
 
-## 提交清单（先读）
+## 已提交（2026-09-03）
 
-三份可提交物，按顺序贴：
+官方仓库 **禁用了 Issues**（只开 Discussions），三份全部发成了 discussion：
 
-1. **Discussion #4879 回复** → `https://github.com/deepseek-ai/deepseek-harness/discussions/4879` 的评论框（下文「Discussion #4879 回复」段）。
-2. **Issue 2**（oneOf 参数被字符串化，硬 bug，根因已定位）→ 仓库 Issues → New issue（下文「Issue 2」段正文）。
-3. **Issue 1**（`output.render` 第二参文档，低风险）→ 仓库 Issues → New issue（下文「Issue 1」段正文）。
+| 讨论 | 分类 | 内容 |
+|---|---|---|
+| [#5510](https://github.com/deepseek-ai/deepseek-harness/discussions/5510) | Ideas | 文件级自学习回路主线（四工具 + 一命令 + 一注入、4 seam、repo 链接） |
+| [#5512](https://github.com/deepseek-ai/deepseek-harness/discussions/5512) | General `[bug]` | oneOf 参数被字符串化（7 步根因链） |
+| [#5511](https://github.com/deepseek-ai/deepseek-harness/discussions/5511) | General `[doc]` | `output.render(args, value)` 第二参文档 |
 
-提交前必做核对：
+### 关键事实（下次别踩）
 
-- **repo 名**：README 写 `deepseek-ai/deepseek-harness`，但 npm 包是 `@deepseek-ai/dsh`。先确认公开仓库真名（discussion URL 以 README 里的为准）。
-- **行号**：Issue 1 的 `index.d.ts:101`/`schema.d.ts:190`、Issue 2 的 7 处行号，都是本机 rev 29b22c5 盘的。提交前对照仓库当前源码微调。
-- **Issue 2 的「DeepSeek 端序列化」措辞**：若不想替 provider 背锅，可把第 4–5 步的「DeepSeek 把 union 序列化成字符串」改成中性表述「provider 端把无 type 的 oneOf 序列化成字符串」——责任指向更模糊、更安全。
+- **repo 真名**：`deepseek-ai/deepseek-harness`（PUBLIC，description "Everything is a Plugin."）——与 npm 包 `@deepseek-ai/dsh` 不是同一名字；README 里的 discussion URL 是对的。
+- **官方禁 Issues**：`gh issue create` 报 `the repository has disabled issues`。反馈只能走 Discussions，分类只有 `Announcements / General / Ideas / Polls / Q&A / Show Your Plugins!`（**没有 Bug 类**，故 bug 报告发 General 并加 `[bug]` 前缀）。
+- **行号**：下方 Issue 1/2 正文的行号是本机 rev 29b22c5 盘的，讨论正文里已标「re-check against the repo」。
+- **GitHub 网络**：本机 `github.com:443` 被阻断，`gh` push 走 `ssh://git@ssh.github.com:443/...`（见 `docs/release-notes.md`）。
 
-建议顺序：先 Discussion（最可能换来官方 support）→ 再 Issue 2（硬 bug）→ 最后 Issue 1（小修）。
-
-> 2026-09-03 整理。证据均来自本机 dsh（rev 29b22c5）盘上源码 / `.d.ts`，均核对过行号。别凭记忆抄，行号以仓库为准。
+下方 Issue 1 / Issue 2 两段完整英文正文留档，与 discussion #5511 / #5512 发布内容一致。
 
 ## 已排除（重新核对后不成立）
 
@@ -35,7 +36,7 @@
 
 ---
 
-## Issue 1（可提，低风险文档 PR）—— `ToolOutputDefinition.render` 没写清哪个参数才是要渲染的 value
+## Issue 1（已发 discussion #5511）—— `ToolOutputDefinition.render` 没写清哪个参数才是要渲染的 value
 
 留档说明：这是「注释不直白」的 DX 问题，不是 bug。类型签名 `(args, value)` 是对的，但对 **plain-JS 插件**（cordis plugin 不经 TS 编译）等于零保护，参数顺序反直觉，极易写反。
 
@@ -78,7 +79,7 @@ Ideally add the same note to the `defineTool` docs/example with a one-line count
 
 ---
 
-## Issue 2（根因已定位，硬 bug）—— 工具参数 `oneOf`/无明确 `type` 被 DeepSeek 模型输出成字符串，导致 oneOf 校验 `matched 0`
+## Issue 2（已发 discussion #5512）—— 工具参数 `oneOf`/无明确 `type` 被 DeepSeek 模型输出成字符串，导致 oneOf 校验 `matched 0`
 
 > 已从源码完整定位（rev 29b22c5）。根因不是「参数反序列化」出错，而是「`oneOf` union 参数在 DeepSeek 端被模型序列化成字符串」。以下英文正文可直接粘贴为 issue。
 
@@ -116,7 +117,9 @@ Call `cordis_define` with `plugin: { kind: "new", idPrefix: "test" }` → always
 
 ---
 
-## Discussion #4879 回复（拟回 deepseek-harness#4879，直接粘贴为 comment）
+## ~~Discussion #4879 回复~~（已作废：复核发现 #4879 是「Web GUI 侧边栏视图切换 seam」讨论、与 dsh-reflect 无关；正确去向是 discussion #5510）
+
+> 以下英文草稿不再使用，仅留档。
 
 We built a third-party spike (`@garvel/dsh-reflect`) for exactly the missing loop this discussion describes — turning completed sessions into durable, cross-session lessons. Sharing the architecture choices that held up, plus the harness seams we had to lean on that would benefit from being formalized.
 

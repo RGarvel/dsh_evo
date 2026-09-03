@@ -70,4 +70,4 @@ dsh plugin --profile web add file:<path-to-this-repo>   # 或 npm 发布后 @gar
 
 ## 渊源
 
-对话线索：harness 无权重级自学习（那是 Hermes 训练侧叙事）→ 三层外部记忆盘点 → 缺口=自动蒸馏回路 → 本 spike。上游相关提案：[deepseek-harness#4879](https://github.com/deepseek-ai/deepseek-harness/discussions/4879)。
+对话线索：harness 无权重级自学习（那是 Hermes 训练侧叙事）→ 三层外部记忆盘点 → 缺口=自动蒸馏回路 → 本 spike。上游已提交：[discussion #5510](https://github.com/deepseek-ai/deepseek-harness/discussions/5510)（主线 · Ideas）+ [#5512](https://github.com/deepseek-ai/deepseek-harness/discussions/5512)（[bug] oneOf）+ [#5511](https://github.com/deepseek-ai/deepseek-harness/discussions/5511)（[doc] render）。

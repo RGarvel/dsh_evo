@@ -39,9 +39,11 @@
    - **工作区级注入已定案可做**（见上面那条 ❌→✅）：`context.agent.session.header.cwd`，且更好的形态是 `systemPrompt.section()` 而非瀑布监听；
    - 安全底线：候选只进 `pending.md`，`userQuestions.ask()` 做复核门，redaction 在进 pending 之前，总开关放 `settings` 注册 `reflect` 命名空间。
 3. ✅ **注入预算 token 化已做**（结论比预想的简单：harness 给系统提示定价就是 `ceil(len/4)+4`，所以"token 化"=用同一除数，别去调 `tokenMeter.estimateMessage`——它面向会话消息）。剩：语义判重（把现有条目喂给提炼步骤输出 `new/merge/drop`，本机无 embedding 零件）、与 skills 打通（`skills.register` 可挂 provider）；
-4. 上游联动，现在有两个候选，**第二个比 #4879 值钱**：
-   - #4879：论据要改写——不再是"请透出 cwd"，而是"`AssembleContext` 的 .d.ts 漏声明了运行时一直存在的 `agent` 字段（`assembleContextFor()` 返回 `{agent, scope:agent}`），请补齐"。优先级降；
-   - **新报告（建议优先）**：rev 29b22c5 上"参数根 schema 只有 `oneOf`／无可解析 `type` → 值被当字符串送达"，两条独立复现（`cordis_define.plugin` 恒 matched 0、MCP `sec_filing_read.filing`），控制组是显式 `type:"object"`。这条堵死了动态 Cordis 插件的全部入口，比 cwd 严重。
+4. ✅ 上游联动已提交（2026-09-03；官方仓库**禁 Issues 只收 Discussion**，故全走 discussion）：
+   - #5510（Ideas）：文件级自学习回路 + 4 seam 主线提案；
+   - #5512（General `[bug]`）：oneOf 参数被字符串化（rev 29b22c5 定位，7 步根因链，堵死动态 Cordis 插件入口）；
+   - #5511（General `[doc]`）：`output.render(args, value)` 第二参文档。
+   纠错：#4879 实为「Web GUI 侧边栏『视图切换』seam」讨论（作者自己的 dsh-channel-view，与 dsh-reflect 无关），早前张冠李戴已纠正。`AssembleContext.agent` 那条也不是缺陷（declaration merging 已声明），仅 `.d.ts` 分散易漏读。
 5. 发版决策：@garvel/dsh-reflect 首发用 --tag spike；发布必须你终端跑（EOTP 网页认证）。当前版本 `0.0.1-spike.7`，`files` 已含 `lib`/`docs`/`cordis.patch.yml`/`README`/`LICENSE`，`dsh.bundle` 声明也已就位——发出去的包可直接 `dsh plugin add @garvel/dsh-reflect`。
 6. **实现进度（按设计文档 §4 切分）**：
    - 第 1 步探针：`scope→cwd` 那问已由源码定案（见 ❌→✅ 条）；**两个剩的探针已落地为 spike.7 的自证代码**：`session/event` 监听器写 `~/.dsh/reflect/events.jsonl`（`{global:true}`，重启后读文件看 session 分布），`searchEvents` 本机无 SQLite（`SESSION_QUERY_SEARCH_DISABLED`），选材退化为 `listSessions` + `filterEvents`；

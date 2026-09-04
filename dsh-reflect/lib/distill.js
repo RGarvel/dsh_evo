@@ -28,9 +28,10 @@ function isTurnEnd(e) {
 
 const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes per session
 const DISTILL_TIMEOUT_MS = 120_000; // reasoning models need >60s to finish thinking + emit text
-// Verification tuning: dropped from 3 to 1 so the loop fires on the 2nd completed
-// turn of a fresh session (a real release would want 3+). env-overridable.
-const MIN_COMPLETED_TURNS = Number(process.env.REFLECT_MIN_TURNS || 1); // skip short sessions
+// Minimum completed turns before a session qualifies (released default 3). The
+// settings `minTurns` field overrides this at call time; REFLECT_MIN_TURNS is the
+// env fallback when settings is not mounted.
+const MIN_COMPLETED_TURNS = Number(process.env.REFLECT_MIN_TURNS || 3); // skip short sessions
 const PROMPT = `You are a lessons-extraction assistant for a coding agent.
 Given a recent conversation's user turns and assistant replies, extract durable,
 actionable lessons suitable for future sessions.
@@ -63,10 +64,14 @@ If you return only "new" items, the existing lessons are preserved unchanged.`;
 // Per-session last-distill timestamp (in-memory, reset on restart).
 const lastDistill = new Map();
 
-// Spike diagnostic: log every gate the distill loop passes or bails on, so one
-// restart tells us exactly why pending.md stayed empty. Strips before release.
-const DEBUG_FILE = join(homedir(), ".dsh", "reflect", "distill-debug.log");
+// Distill-loop diagnostic (opt-in): log every gate the loop passes or bails on.
+// DISABLED by default — only written when DSH_REFLECT_DEBUG_FILE names a path.
+const DEBUG_FILE = (() => {
+  const raw = process.env.DSH_REFLECT_DEBUG_FILE;
+  return raw && raw !== "off" ? raw : "";
+})();
 function dbg(msg) {
+  if (!DEBUG_FILE) return;
   try {
     writeFileSync(DEBUG_FILE, new Date().toISOString() + ` pid=${process?.pid ?? "?"} ` + msg + "\n", { flag: "a", encoding: "utf8" });
   } catch {
@@ -125,7 +130,7 @@ async function fetchTurnContent(sessionQuery, sessionId, sinceSeq, maxEvents = 2
  * Core distillation: sessionQuery + llm + pending.
  * Fire-and-forget; errors are caught and logged.
  */
-export async function tryDistill(ctx, event, session) {
+export async function tryDistill(ctx, event, session, minTurns = MIN_COMPLETED_TURNS) {
   try {
     const sessionQuery = ctx.get("sessionQuery");
     if (!sessionQuery) { dbg("bail: no sessionQuery service"); return; }
@@ -152,7 +157,7 @@ export async function tryDistill(ctx, event, session) {
     const completedSince = allEvents
       .filter((e) => isTurnEnd(e))
       .filter((e) => e.seq < event.seq);
-    if (completedSince.length < MIN_COMPLETED_TURNS) { dbg(`bail: completed turns before this = ${completedSince.length} < ${MIN_COMPLETED_TURNS}`); return; }
+    if (completedSince.length < minTurns) { dbg(`bail: completed turns before this = ${completedSince.length} < ${minTurns}`); return; }
     const sinceSeq = completedSince[completedSince.length - 1].seq;
     // Committed to a distillation pass — arm the per-session debounce now, so a
     // turn that only bailed on the count (above) never suppresses the next one.

@@ -20,6 +20,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { settingsNamespace } from "@deepseek-ai/dsh-settings";
+import z from "@deepseek-ai/schemastery";
 import {
   CHARS_PER_TOKEN,
   mergeEntry,
@@ -57,10 +59,6 @@ const slashMove = (m) => {
   if (m.kind === "supersede") return `✓ 取代 memory #${m.idx}（新增）：${m.text}`;
   return `✓ 入库 #${m.index}：${m.text}`;
 };
-// Stamp every diagnostic line with version + process pid so a restart straddle
-// can't confuse which process handled a given turn/end. Stripped on release.
-const SPIKE_VER = "22";
-
 const SECTION_NAME = "dsh-reflect-memory";
 const GLOBAL_FILE = process.env.DSH_REFLECT_GLOBAL_FILE || join(homedir(), ".dsh", "reflect", "memory.md");
 const GLOBAL_PENDING = process.env.DSH_REFLECT_GLOBAL_PENDING || join(homedir(), ".dsh", "reflect", "pending.md");
@@ -70,12 +68,11 @@ const WORKSPACE_PENDING_REL = join(".dsh", "memory-pending.md");
 const INJECT_MAX_TOKENS = Number(process.env.DSH_REFLECT_INJECT_MAX_TOKENS || 600);
 // Legacy direct override in characters; when set it wins over the token budget.
 const INJECT_MAX_CHARS = Number(process.env.DSH_REFLECT_INJECT_MAX_CHARS || 0);
-// Spike probe: write every session/event to events.jsonl so we can verify
-// {global:true} listeners see ALL sessions' turns, not just the current one.
+// Session/event probe (opt-in): written only when DSH_REFLECT_EVENT_LOG names a
+// real path. This was a spike diagnostic to verify {global:true} sees all sessions.
 const EVENT_LOG = (() => {
   const raw = process.env.DSH_REFLECT_EVENT_LOG;
-  if (raw === "off") return "";
-  return raw ? raw : join(homedir(), ".dsh", "reflect", "events.jsonl");
+  return raw && raw !== "off" ? raw : "";
 })();
 // Spike-only auto-distill gate, resolved from any of three sources so the
 // loop can be exercised without depending on terminal env inheritance:
@@ -94,22 +91,29 @@ function resolveAutoDistill() {
     return false;
   }
 }
+// User-settings total switch (auto-distill-design.md §1.4): the auto-distill knob
+// lives in a `reflect` settings namespace (GUI-adjustable) instead of only env/
+// sentinel. Registration is OPTIONAL — with no settings service mounted the env/
+// sentinel path keeps working, so every composition works either way.
+const REFLECT_SETTINGS_NS = settingsNamespace("reflect");
+const REFLECT_SETTINGS_SCHEMA = z.object({
+  enabled: z.boolean(),
+  autoDistill: z.boolean(),
+  minTurns: z.number(),
+  pendingBudget: z.number(),
+});
 const MAX_ENTRIES = 500;
 
 /**
- * Self-observation for the injection face.
- *
- * "Warn once" is not enough to debug a silently dropped layer: what matters is
- * WHICH LINK of `context.agent?.session?.header?.cwd` came up empty on the turn
- * where it happened. So each assembly overwrites a tiny state file. It is a spike
- * diagnostic (a 200-byte sync write per model request), goes before any real
- * release, and `DSH_REFLECT_ASSEMBLY_FILE=off` disables it. Failing to write it
- * must never fail the request, hence the inner catch.
+ * Injection-face self-observation (opt-in): reportShape() overwrites a tiny
+ * state file on each assembly so a dropped layer can be traced to the exact cwd
+ * chain link that came up empty. DISABLED by default — only written when
+ * DSH_REFLECT_ASSEMBLY_FILE names a real path. Failing to write never fails the
+ * request, hence the inner catch.
  */
 const ASSEMBLY_FILE = (() => {
   const raw = process.env.DSH_REFLECT_ASSEMBLY_FILE;
-  if (raw === "off") return "";
-  return raw ? raw : join(homedir(), ".dsh", "reflect", "assembly.json");
+  return raw && raw !== "off" ? raw : "";
 })();
 let assemblies = 0;
 
@@ -160,15 +164,6 @@ function pendingFile(scope, workspaceDir) {
 const render = (_args, value) => [{ type: "text", text: JSON.stringify(value) }];
 
 function apply(ctx) {
-  // spike diagnostic: prove apply() actually ran. A plugin stuck in inject-waiting
-  // never reaches here — which is exactly what spike.18 did. Stripped before release.
-  try {
-    writeFileSync(
-      join(homedir(), ".dsh", "reflect", "distill-debug.log"),
-      new Date().toISOString() + ` apply: tool-reflect activated (spike.${SPIKE_VER} pid=${process?.pid ?? "?"})\n`,
-      { flag: "a", encoding: "utf8" },
-    );
-  } catch { /* diagnostics must never block activation */ }
   ctx.tools.register(defineTool({
     name: "reflect_record",
     description:
@@ -405,8 +400,8 @@ function apply(ctx) {
     });
   }
 
-  // ---- manual distill command (spike: lists sessions with completed turns only,
-  // no auto-trigger yet — waiting on the {global:true} event-listener probe) ----
+  // ---- manual distill command (skeleton: auto-distill is live via the
+  // session/event listener; this only reports what a manual pass would scan) ----
   if (commands !== undefined) {
     commands.register({
       name: "reflect-distill",
@@ -418,25 +413,52 @@ function apply(ctx) {
         const countMatch = parts.find((p) => p.startsWith("--count="));
         const maxSessions = countMatch ? Number.parseInt(countMatch.split("=")[1], 10) || 10 : 10;
         if (Number.isNaN(maxSessions) || maxSessions < 1) return { kind: "error", text: "reflect-distill: --count must be a positive integer" };
-        // Stub: in the real loop this would call sessionQuery.listSessions + filterEvents.
-        // For now, return a placeholder that the probe events.jsonl will confirm the
-        // listener is alive when the user checks it after a restart.
+        // Auto-distillation is wired (session/event listener + tryDistill); this
+        // command is still a skeleton — it only reports what a manual pass WOULD scan.
         return {
           kind: "success",
-          text: `reflect-distill (spike stub): scope=${scope}, max=${maxSessions}\n` +
-            `This command is a skeleton — auto-distillation is not yet wired.\n` +
-            `Use /reflect-review to approve queued candidates.\n` +
-            `Check ~/.dsh/reflect/events.jsonl to verify the session/event listener fired.`,
+          text: `reflect-distill (skeleton): scope=${scope}, max=${maxSessions}\n` +
+            `Auto-distillation is live on turn/end (settings reflect.autoDistill).\n` +
+            `Use /reflect-review to approve queued candidates.`,
         };
       },
     });
   }
 
-  // ---- spike probe + auto-distill: {global:true} session/event listener ----
-  // Logs every event to EVENT_LOG so we can verify {global:true} spans all sessions.
-  // When the auto-distill gate resolves on (env, .env, or sentinel file), also
-  // triggers a distillation pass on each completed turn/end (debounced, 5 min gap).
-  const AUTO_DISTILL = resolveAutoDistill();
+  // ---- auto-distill: {global:true} session/event listener ----
+  // The auto-distill gate resolves from the settings namespace (when mounted),
+  // with env/sentinel as the strongest override; triggers a distillation pass on
+  // each completed turn/end (debounced, 5 min gap).
+  let reflectSettings = null;
+  const settingsSvc = ctx.get("settings");
+  if (settingsSvc !== undefined) {
+    try {
+      reflectSettings = settingsSvc.register(REFLECT_SETTINGS_NS, REFLECT_SETTINGS_SCHEMA, {
+        base: { enabled: true, autoDistill: false, minTurns: 3, pendingBudget: 50 },
+        applies: "live",
+      });
+    } catch { /* settings registration is best-effort; env/sentinel fallback */ }
+  }
+  const readAutoDistill = () => {
+    // env/sentinel stays the strongest override (spike verification path), then settings.
+    if (resolveAutoDistill()) return true;
+    if (reflectSettings) {
+      try {
+        const v = reflectSettings.get();
+        return v.enabled === true && v.autoDistill === true;
+      } catch { /* read failure falls through to off */ }
+    }
+    return false;
+  };
+  const readMinTurns = () => {
+    if (reflectSettings) {
+      try {
+        const v = reflectSettings.get();
+        if (Number.isFinite(v.minTurns) && v.minTurns >= 1) return v.minTurns;
+      } catch { /* fall through to env */ }
+    }
+    return Number(process.env.REFLECT_MIN_TURNS || 3);
+  };
   ctx.on("session/event", (subject, event) => {
     // Probe: always write (cheap append).
     if (EVENT_LOG) {
@@ -458,23 +480,14 @@ function apply(ctx) {
         /* probe must never break the session */
       }
     }
-    // Distill: fire-and-forget, guarded by env and event shape.
-    if (event?.type === "turn/end") {
-      try {
-        writeFileSync(
-          join(homedir(), ".dsh", "reflect", "distill-debug.log"),
-          new Date().toISOString() + ` listener: v${SPIKE_VER} pid=${process?.pid ?? "?"} AUTO_DISTILL=${AUTO_DISTILL} reason=${event?.data?.reason?.kind} seq=${event?.seq} sid=${String(subject?.id ?? "").slice(-6)}\n`,
-          { flag: "a", encoding: "utf8" },
-        );
-      } catch { /* diagnostics must never break the session */ }
-    }
-    if (!AUTO_DISTILL) return;
+    // Distill: fire-and-forget, guarded by the settings/env gate and event shape.
+    if (!readAutoDistill()) return;
     if (event?.type !== "turn/end" || event?.data?.reason?.kind !== "completed") return;
     // session/event's subject is the Session (dsh-agent-loop keys on `subject === session`),
     // so it carries .id / .header.cwd / .requestContext() directly — no `.session` hop.
     const session = subject;
     if (!session) return;
-    tryDistill(ctx, event, session).catch(() => {});
+    tryDistill(ctx, event, session, readMinTurns()).catch(() => {});
   }, { global: true });
 
   // A `section()` provider, not a `system-prompt/assemble` listener: the registry

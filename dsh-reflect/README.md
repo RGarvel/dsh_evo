@@ -26,12 +26,12 @@ DSH 的模型权重永远冻结，它的"学习"只能是**文件级外部记忆
 
 ## 它刻意不是什么（v0 边界）
 
-- **不自动触发**：沉淀/整理由模型按注入规约主动调用（或你一句"把今天的坑记下来"）。**复核队列已经就位但没有生产者**——自动蒸馏是下一步（见路线图 1），届时候选只会进 `pending.md`，不会直写 `memory.md`；
+- **自动蒸馏默认关闭**：沉淀/整理由模型按注入规约主动调用（或你一句"把今天的坑记下来"）。自动蒸馏回路已落地（`session/event` 折 `turn/end{completed}` → 提炼 → 候选**只进** `pending.md`，绝不直写 `memory.md`），但默认 `off`——用 `settings` 的 `reflect.autoDistill`，或 env `REFLECT_AUTO_DISTILL=on` / 哨兵文件 `~/.dsh/reflect/auto-distill.on` 打开；
 - **不读会话历史**：v0 不做"会话结束自动回看 transcript 蒸馏"。零件其实齐了——`sessionQuery` 服务（`listSessions`/`filterEvents`/`searchEvents`）+ `llm.stream` 单发提炼 + `ctx.timer` 静默去抖，缺的是策略与安全门，见 `docs/auto-distill-design.md`；
 - ~~workspace 层只写不注入~~ **已修**：注入改为 per-session provider，工作区层跟着 `header.cwd` 进提示词。留这条是为了记成因——早先那句"`AssembleContext` 拿不到 cwd"是**只读 `.d.ts` 的错判**：运行时 `assembleContextFor()` 一直把 `agent` 塞在 context 里（`scope === agent`），官方 plan-mode 就在用。**`.d.ts` 不是契约，看调用点**；
 - **不自称精确 token 计数**：预算除数直接取 harness 自己的 `estimateSystemTokens`（`ceil(len/4) + 4`），没有 embedding、没有 tiktoken。曾打算调 `tokenMeter.estimateMessage()`，读完源码放弃——那是面向**会话消息**的（要 role framing、`+4` per block），拿伪造 Message 喂它只会让预算和循环实际计费不一致；
 - 去重是精确归一化匹配，不做语义判重（语义判重=consolidate 的活）；
-- 无 config 面（常量 + 五个 env：`DSH_REFLECT_GLOBAL_FILE` / `_GLOBAL_PENDING` / `_INJECT_MAX_TOKENS` / 直接覆盖用的 `_INJECT_MAX_CHARS` / 诊断用的 `_ASSEMBLY_FILE`），spike 阶段够用。`_ASSEMBLY_FILE` 每次组装覆盖写一份 `{stage, cwd, global, workspace, pending, chars}`——`stage` 直接点名 cwd 那条链断在哪一格，是"插件挂载了但某一层没进来"的唯一取证面，**正式发布前要拿掉**（设 `off` 即关）。**注意**：一旦上自动回路，`settings` 注册 `reflect` 命名空间做总开关是硬要求（详见设计文档 §1.4）。
+- config 面两层：**正式开关在 `settings`**——`reflect` 命名空间（GUI 可调），字段 `enabled` / `autoDistill` / `minTurns` / `pendingBudget`（默认 `enabled=true`、其余 `off`/`3`/`50`）。env 仍是尖峰验证/紧急覆盖（`DSH_REFLECT_GLOBAL_FILE` / `_GLOBAL_PENDING` / `_INJECT_MAX_TOKENS` / `_INJECT_MAX_CHARS` / `REFLECT_AUTO_DISTILL` / `REFLECT_MIN_TURNS`）。三个诊断探针**默认全关**（opt-in，显式给路径才写）：`DSH_REFLECT_ASSEMBLY_FILE`（注入面取证，`stage` 点名 cwd 链断在哪一格）、`DSH_REFLECT_EVENT_LOG`（逐事件 jsonl）、`DSH_REFLECT_DEBUG_FILE`（蒸馏门控 trace）。settings 服务未挂载时自动回退 env，任意组装都能跑（详见设计文档 §1.4）。
 
 ## 测试
 
@@ -45,7 +45,7 @@ npm test
 
 > 坑（实机才暴露）：harness 的 `output.render(args, value)` **第一参是入参、返回值在第二位**。早期写成 `render = (value) => JSON.stringify(value)`，工具于是把**模型自己的入参**当成结果回显——写盘照常成功、测试全绿，只有真会话能看出来。签名对照见官方 `dsh-tool-fs` 的 `render: (_args, value) => …`。
 
-`node_modules/@deepseek-ai/{dsh-tools,dsh-llm}` 是指向已安装 dsh 的 **junction**（开发形态，发布物走 peerDependencies）。
+`node_modules/@deepseek-ai/{dsh-tools,dsh-llm,dsh-settings,schemastery}` 是指向已安装 dsh 的 **junction**（开发形态，发布物走 peerDependencies）。
 
 ## 安装（本机 DSH）
 
@@ -63,8 +63,8 @@ dsh plugin --profile web add file:<path-to-this-repo>   # 或 npm 发布后 @gar
 
 **详细设计已成稿**：[`docs/auto-distill-design.md`](docs/auto-distill-design.md)（触发/选材/提炼/复核四环节，附零件清单与实测过的服务面）。骨架：
 
-1. **自动蒸馏**（下一步，也是唯一还没有生产者的环节）：`session/event` 折 `turn/end{completed}` + `ctx.timer` 静默去抖（**不是** `dsh-schedule`——它是会话内提醒器，不启动 agent turn）→ `sessionQuery` 选候选会话 → `llm.stream` 单发提炼 → 候选进 `pending.md`。开工前还欠两个探针：`{global:true}` 的监听能否收到**所有**会话的 `turn/end`；`searchEvents` 本机是否真有全文（`~/.dsh` 下搜不到 sqlite 文件）；
-2. **复核门**：队列 + `/reflect-review` + 凭据筛查已就位（第 4 个工具那节）。剩两件锦上添花：`userQuestions.ask()` 把批准变成一次点击式提问，`settings` 注册 `reflect` 命名空间做总开关；
+1. **自动蒸馏**（✅ 已落地，默认 off）：`session/event` 折 `turn/end{completed}` + 5 分钟去抖 → `sessionQuery` 选候选会话 → `llm.stream` 单发提炼 → 候选进 `pending.md`。两个探针已定案：`{global:true}` 监听确实收到所有会话的 `turn/end`（events.jsonl probe）；`searchEvents` 本机无 SQLite 全文（选材用 `listSessions`+`filterEvents`）。开关走 `settings`（`reflect.autoDistill`）＋ env/哨兵覆盖；
+2. **复核门**：队列 + `/reflect-review` + 凭据筛查 + `settings` 总开关已就位（第 4 个工具那节）。剩一件锦上添花：`userQuestions.ask()` 把批准变成一次点击式提问；
 3. ✅ **注入面迁移**（已完成）：`assemble` 监听 → `systemPrompt.section()` provider，工作区层注入随之打通；预算改 token 口径（harness 同除数）；**工作区组排在组前**，预算紧时先丢旧的全局教训而非当前项目教训；
 4. compaction 搭车（`compaction/summary` 事件是白捡的输入）、语义判重（`new/merge/drop` 三态交给提炼步骤）、高频教训→SKILL.md 草稿（`skills.register`）。
 
